@@ -1,0 +1,11 @@
+# build output
+*.exe
+/normality
+*.o
+
+# the external equivalence library is cloned here by hand; it is not part of this repository
+third_party/
+
+# Python
+__pycache__/
+*.pyc
