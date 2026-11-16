@@ -17,7 +17,8 @@ Points are integers: bit j of x is the variable x_j, and the truth table lists
 f(0), f(1), ..., f(2^n - 1).
 
 The work is done by the C++ program in this folder.  It is compiled on first
-use (g++ is needed), or explicitly with normality.build().
+use (g++ is needed), or explicitly with normality.build().  The equivalence
+library in third_party/aleq (a git submodule) is built in if it is there.
 """
 from __future__ import annotations
 
@@ -127,8 +128,9 @@ def build(with_library: Optional[bool] = None, compiler: str = "g++", extra_flag
     """Compile the solver next to this file and return its path.
 
     with_library: also build in the external equivalence library (needed for
-    aut=True).  By default that is done if the library has been cloned into
-    third_party/aleq (see README.md).
+    aut=True).  By default that is done if the submodule third_party/aleq has
+    been fetched; should that build fail (the library needs C++20), the solver
+    is built without it.
     """
     if not os.path.isfile(os.path.join(_HERE, "main.cpp")):
         raise NormalityError("the C++ sources are not next to normality.py; build the solver yourself and "
@@ -137,10 +139,12 @@ def build(with_library: Optional[bool] = None, compiler: str = "g++", extra_flag
         raise NormalityError(f"compiler '{compiler}' not found; install g++ or pass compiler=...")
     lib = os.path.join("third_party", "aleq", "src")
     have_lib = os.path.isfile(os.path.join(_HERE, lib, "equivalence_api.cpp"))
-    if with_library is None:
+    auto = with_library is None
+    if auto:
         with_library = have_lib
     if with_library and not have_lib:
-        raise NormalityError("the equivalence library is not in third_party/aleq (see README.md)")
+        raise NormalityError("the equivalence library is not in third_party/aleq; "
+                             "fetch it with:  git submodule update --init")
     cmd = [compiler, "-O3", "-march=native", "-pthread"]
     if os.name == "nt":   # MinGW-w64: see README.md for why these two are needed
         cmd += ["-static", "-Wa,-muse-unaligned-vector-move"]
@@ -155,6 +159,10 @@ def build(with_library: Optional[bool] = None, compiler: str = "g++", extra_flag
               + " the equivalence library) ...", file=sys.stderr)
     done = subprocess.run(cmd, cwd=_HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if done.returncode != 0:
+        if auto and with_library:   # most likely a compiler without C++20
+            if not quiet:
+                print("normality: that did not compile; trying without the library ...", file=sys.stderr)
+            return build(False, compiler, extra_flags, quiet)
         raise NormalityError("compilation failed:\n" + " ".join(cmd) + "\n" + done.stdout)
     return os.path.join(_HERE, _EXE)
 
@@ -222,7 +230,7 @@ def _run(args: Sequence[str], verbose: bool) -> Result:
 def _aut_warning(result: Result) -> Result:
     if "could not be started" in result.symmetry.get("note", ""):
         warnings.warn("aut=True had no effect: this solver was built without the equivalence library "
-                      "(clone it into third_party/aleq and call normality.build(); see README.md)", stacklevel=3)
+                      "(run 'git submodule update --init', then normality.build(); see README.md)", stacklevel=3)
     return result
 
 

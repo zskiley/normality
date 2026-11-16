@@ -42,9 +42,11 @@ normality.family("kasami", 14, hyp=2, known_symmetry=True)   # 18 variables, wit
 
 `normality.py` sits next to the C++ sources and needs nothing but the Python
 standard library. Import it from this folder (or put the folder on
-`PYTHONPATH`). The solver is compiled on first use, which needs `g++`;
-`normality.build()` does the same explicitly, and
-`python -m unittest test_normality` runs the interface tests.
+`PYTHONPATH`). The solver is compiled on first use, which needs `g++`: with
+the equivalence library if the submodule has been fetched and the compiler
+handles C++20, otherwise without. `normality.build()` does the same
+explicitly, and `python -m unittest test_normality` runs the interface
+tests.
 
 `solve` also takes `target=k`, `threads=`, `verbose=True`, and the symmetry
 options described below: `aut=True` (the equivalence library, if it was built
@@ -56,22 +58,30 @@ spectral upper bounds, and reports what the symmetry contributed
 
 ## Build and run
 
-Without the equivalence library (everything except `--aut` works):
+Get the sources together with the equivalence library
+([zskiley/Affine-and-linear-equivalence-algorithms](https://github.com/zskiley/Affine-and-linear-equivalence-algorithms)),
+which is a git submodule in `third_party/aleq`:
 
 ```bash
-g++ -O3 -march=native -std=c++17 -pthread -o normality main.cpp
+git clone --recursive https://github.com/zskiley/normality
 ```
 
-With the library
-([zskiley/Affine-and-linear-equivalence-algorithms](https://github.com/zskiley/Affine-and-linear-equivalence-algorithms),
-C++20), cloned next to the sources:
+In a clone made without `--recursive`, fetch it afterwards:
 
 ```bash
-git clone https://github.com/zskiley/Affine-and-linear-equivalence-algorithms third_party/aleq
+git submodule update --init
 ```
+
+Build with the library (C++20):
 
 ```bash
 g++ -O3 -march=native -std=c++20 -pthread -DNORMALITY_ALEQ -I third_party/aleq/src -o normality main.cpp autgroup.cpp third_party/aleq/src/dfs.cpp third_party/aleq/src/equivalence_api.cpp
+```
+
+Or without it (C++17; everything except `--aut` works):
+
+```bash
+g++ -O3 -march=native -std=c++17 -pthread -o normality main.cpp
 ```
 
 With MinGW-w64 on Windows add `-static -Wa,-muse-unaligned-vector-move` to
@@ -79,9 +89,8 @@ either command. The second flag works around a GCC/Windows stack-alignment
 problem with AVX (without it the program can crash); `-static` avoids loading
 an older C++ runtime DLL that happens to be earlier on the `PATH`.
 
-The library was used at commit `7b97dc0` (23 July 2026). That repository has
-no licence file, so none of its code is included here; `third_party/aleq` is
-only a local clone.
+The submodule is pinned at commit `7b97dc0` of the library (23 July 2026),
+the version all results below were obtained with.
 
 ```bash
 ./normality 0110100110010110            # truth table, character i = f(i)
@@ -465,6 +474,7 @@ symmetry.
 | `gen.hpp` | truth-table parsing, function families and their known symmetries |
 | `autlib.hpp` | runs the equivalence library in a child process |
 | `autgroup.cpp` | the one file that includes the library's headers (optional) |
+| `third_party/aleq` | the equivalence library, as a git submodule |
 | `tests.hpp` | self-test and brute force |
 | `main.cpp` | command line |
 | `normality.py` | Python interface (runs the solver, reads its `--json` output) |
