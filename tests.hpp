@@ -6,6 +6,7 @@
 #include "gen.hpp"
 #include "solver.hpp"
 #include "autlib.hpp"
+#include "ptests.hpp"
 
 typedef unsigned __int128 u128;
 
@@ -783,6 +784,7 @@ static int selftest() {
         expect(!ok && now_sec() - t0 < 8.0, "library time limit not enforced", 10, 0);
         lap("symmetry: external library");
     } else printf("  (external equivalence library not built in: its tests are skipped)\n");
+    fails += pary_selftest(checks);
     printf("selftest: %d checks, %d failures\n", checks, fails);
     return fails;
 }

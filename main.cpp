@@ -1,5 +1,6 @@
 // normality: largest k such that a Boolean function is k-normal
-// (constant on some k-dimensional affine subspace of F_2^n).
+// (constant on some k-dimensional affine subspace of F_2^n), and the same
+// for functions F_p^n -> F_p, p an odd prime (option --p).
 //
 // Build:  g++ -O3 -march=native -std=c++17 -pthread -o normality main.cpp
 // (see README.md for the build with the external equivalence library)
@@ -44,6 +45,15 @@ static void usage() {
          "  --aut-file FILE  read candidate maps: one per line, the images of e_0 .. e_(n-1), then A(0)\n"
          "  --sym-given      keep the given coordinates (do not try coordinates adapted to the group)\n"
          "  --no-mates       use the whole group for the first direction only\n"
+         "odd characteristic (f : F_p^n -> F_p, P a prime up to 61):\n"
+         "  --p P            the table has P^n values 0 .. P-1; value number x_0 + x_1 P + ... is f(x).\n"
+         "                   P <= 7: one digit per value; larger P: numbers separated by spaces or commas\n"
+         "                   with --p, instead of a table:\n"
+         "    --power N D [E]    Tr(g^E x^D) over GF(P^N), g primitive; may be repeated, the terms are added\n"
+         "    --mm N [SEED]      Maiorana-McFarland bent function\n"
+         "    --quad N [T]       quadratic form x0 x1 + x2 x3 + ... (T = 1: the elliptic one, x0^2 - c x1^2 + ...)\n"
+         "    --random N [SEED]  uniformly random function\n"
+         "                   and of the options above: -f, -t, -v, --json, --scramble, --target\n"
          "other:\n"
          "  --suite [--big]  run the built-in collection of structured functions (--big adds the slow ones);\n"
          "                   --suite-bent / --suite-other run one half of it\n"
@@ -104,7 +114,7 @@ static void print_json(const Result& r, int n, int target, const TT& F) {
         }
         return o;
     };
-    printf("{\"n\": %d, \"k\": %d, \"exact\": %s, \"value\": %d, \"offset\": %u, \"basis\": [", n, r.k,
+    printf("{\"p\": 2, \"n\": %d, \"k\": %d, \"exact\": %s, \"value\": %d, \"offset\": %u, \"basis\": [", n, r.k,
            target < 0 ? "true" : "false", r.value, r.a);
     for (size_t i = 0; i < r.basis.size(); ++i) printf("%s%u", i ? ", " : "", r.basis[i]);
     printf("], \"upper_bounds\": [%d, %d], \"greedy\": %d, \"linear_structures\": %d", r.ub[0], r.ub[1], r.greedy_k,
@@ -118,6 +128,130 @@ static void print_json(const Result& r, int n, int target, const TT& F) {
            r.sym_loaded ? "true" : "false", r.sym_gens, r.sym_order, r.sym_flip ? "true" : "false",
            (unsigned long long)r.st.sym_skipped, esc(r.sym_note).c_str());
     printf(", \"seconds\": %.6f}\n", r.seconds);
+}
+
+// ------------------------------------------------------------ odd characteristic
+static std::string pa_vec(u32 x, int p, int n) {  // the coordinates x_0 .. x_(n-1)
+    std::string o;
+    for (int i = 0; i < n; ++i, x /= p) {
+        if (p > 7 && i) o.push_back(' ');
+        o += std::to_string(x % p);
+    }
+    return o;
+}
+
+static void pa_report(const PResult& r) {
+    printf("p = %d, n = %d\n", r.p, r.n);
+    printf("largest k such that f is k-normal: %d\n", r.k);
+    printf("witness: f = %d on a + span(basis), points given as x_0 + x_1 p + ... and by their coordinates x_0 .. x_%d\n",
+           r.value, r.n - 1);
+    printf("  a     = %-10u (%s)\n", r.a, pa_vec(r.a, r.p, r.n).c_str());
+    for (size_t i = 0; i < r.basis.size(); ++i)
+        printf("  %s %-10u (%s)\n", i ? "       " : "basis =", r.basis[i], pa_vec(r.basis[i], r.p, r.n).c_str());
+    printf("spectral upper bounds:");
+    for (int c = 0; c < r.p; ++c) printf(" f=%d: %d%s", c, r.ub[c], c + 1 < r.p ? "," : "");
+    printf(";  greedy lower bound: %d\n", r.greedy_k);
+    if (r.lin_dim) printf("invariant linear structures factored out: %d\n", r.lin_dim);
+    if (r.searches == 0) printf("optimality: the flat found meets the spectral bound, no exhaustive search needed\n");
+    else
+        printf("optimality: %d exhaustive searches (%llu dense nodes, %llu sparse nodes, %llu candidates)\n", r.searches,
+               (unsigned long long)r.st.dense_nodes, (unsigned long long)r.st.sparse_nodes, (unsigned long long)r.st.cands);
+    printf("time: %.3f s\n", r.seconds);
+}
+
+static void pa_print_json(const PResult& r, int target) {
+    printf("{\"p\": %d, \"n\": %d, \"k\": %d, \"exact\": %s, \"value\": %d, \"offset\": %u, \"basis\": [", r.p, r.n, r.k,
+           target < 0 ? "true" : "false", r.value, r.a);
+    for (size_t i = 0; i < r.basis.size(); ++i) printf("%s%u", i ? ", " : "", r.basis[i]);
+    printf("], \"upper_bounds\": [");
+    for (int c = 0; c < r.p; ++c) printf("%s%d", c ? ", " : "", r.ub[c]);
+    printf("], \"greedy\": %d, \"linear_structures\": %d", r.greedy_k, r.lin_dim);
+    if (target >= 0) printf(", \"target\": %d, \"target_normal\": %s", target, r.k >= target ? "true" : "false");
+    printf(", \"max_walsh\": %.9g, \"bent\": %s", r.max_walsh, r.bent ? "true" : "false");
+    printf(", \"searches\": %d, \"dense_nodes\": %llu, \"sparse_nodes\": %llu, \"candidates\": %llu", r.searches,
+           (unsigned long long)r.st.dense_nodes, (unsigned long long)r.st.sparse_nodes, (unsigned long long)r.st.cands);
+    printf(", \"symmetry\": {\"looked_at\": false, \"generators\": 0, \"order\": 0, \"flip\": false, \"skipped\": 0, "
+           "\"note\": \"\"}");
+    printf(", \"seconds\": %.6f}\n", r.seconds);
+}
+
+static int pary_main(int argc, char** argv, int p) {
+    PField F;
+    if (!F.init(p)) { fprintf(stderr, "--p needs a prime between 2 and 61\n"); return 2; }
+    Options opt;
+    opt.threads = std::max(1u, std::thread::hardware_concurrency());
+    bool json = false;
+    int target = -1, mode = 0, n = -1;
+    u64 scr = 0;
+    std::string table;
+    PT f;
+    auto fits = [&](int nn) { return nn >= 1 && nn <= F.maxdim && F.pw[nn] <= 60000000; };
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto num = [&](int j) { return j < argc ? strtoull(argv[j], nullptr, 0) : 0ULL; };
+        auto has = [&](int j) { return j < argc && isdigit((unsigned char)argv[j][0]); };
+        if (a == "--p" && has(i + 1)) ++i;
+        else if (a == "-h" || a == "--help") { usage(); return 0; }
+        else if (a == "--json") json = true;
+        else if (a == "-v") opt.verbose = true;
+        else if (a == "--target" && has(i + 1)) target = (int)num(++i);
+        else if (a == "--scramble" && has(i + 1)) scr = num(++i);
+        else if (a == "-t" && has(i + 1)) opt.threads = std::max(1, (int)num(++i));
+        else if (a == "--sparse-weight" && i + 1 < argc) opt.sparse_weight = atof(argv[++i]);
+        else if (a == "--p-mode" && has(i + 1)) mode = (int)num(++i);  // 1: lists only, 2: bitsets wherever possible
+        else if (a == "-f" && i + 1 < argc) {
+            std::ifstream in(argv[++i]);
+            if (!in) { fprintf(stderr, "cannot open %s\n", argv[i]); return 2; }
+            std::stringstream ss;
+            ss << in.rdbuf();
+            table = ss.str();
+        } else if ((a == "--random" || a == "--mm" || a == "--quad") && has(i + 1)) {
+            n = (int)num(++i);
+            const u64 arg = has(i + 1) ? num(++i) : a == "--quad" ? 0 : 1;
+            if (!fits(n) || (a == "--mm" && n % 2) || (a == "--quad" && arg == 1 && (n % 2 || p == 2))) {
+                fprintf(stderr, "%s: no such function for p = %d, n = %d\n", a.c_str(), p, n);
+                return 2;
+            }
+            f = a == "--random" ? pa_random(p, n, arg) : a == "--mm" ? pa_mm(p, n, arg) : pa_quadratic(p, n, (int)arg);
+        } else if (a == "--power" && has(i + 2)) {
+            const int nn = (int)num(++i);
+            const u64 d = num(++i), e = has(i + 1) ? num(++i) : 0;
+            if (!fits(nn) || (n >= 0 && nn != n) || !pa_add_monomial(f, p, nn, d, e)) {
+                fprintf(stderr, "--power: no field GF(%d^%d) of a usable size, or the terms have different N\n", p, nn);
+                return 2;
+            }
+            n = nn;
+        } else if (a[0] != '-') table = a;
+        else {
+            fprintf(stderr, "option %s is not available with --p %d\n", a.c_str(), p);
+            return 2;
+        }
+    }
+    if (f.empty()) {
+        if (table.empty()) { usage(); return 2; }
+        n = pa_parse(table, p, f);
+        if (n < 1) { fprintf(stderr, "bad table: need exactly %d^n values between 0 and %d\n", p, p - 1); return 2; }
+    }
+    if (!fits(n)) { fprintf(stderr, "too large: at most 60 million points\n"); return 2; }
+    if (scr) f = pa_scramble(f, p, n, scr);
+    PResult r = pa_solve(f, p, n, opt, target, mode);
+    if (json) {
+        pa_print_json(r, target);
+        return 0;
+    }
+    if (target >= 0) {
+        printf("p = %d, n = %d\nf is %d-normal: %s\n", p, n, target, r.k >= target ? "YES" : "NO");
+        if (r.k < target) {
+            printf("(best flat found so far has dimension %d; the maximum was not determined)\n", r.k);
+            printf("time: %.3f s\n", r.seconds);
+        }
+    }
+    if (target < 0 || r.k >= target) pa_report(r);
+    if (target < 0 && r.bent) {
+        if (n % 2 == 0) printf("f is bent and %s (n/2 = %d)\n", 2 * r.k == n ? "normal" : "NOT normal", n / 2);
+        else printf("f is bent (in odd dimension a bent function is at most %d-normal)\n", (n - 1) / 2);
+    }
+    return 0;
 }
 
 // f + <u, x> for every u, the outer loop spread over the threads.
@@ -266,6 +400,8 @@ static bool read_maps(const char* path, int n, std::vector<AffMap>& out) {
 int main(int argc, char** argv) {
     if (argc == 5 && !strcmp(argv[1], "--aut-worker")) return aut_worker(argv[2], argv[3], atof(argv[4]));
     aut_set_self(argv[0]);
+    for (int i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--p") && atoi(argv[i + 1]) != 2) return pary_main(argc, argv, atoi(argv[i + 1]));
     Options opt;
     opt.threads = std::max(1u, std::thread::hardware_concurrency());
     bool hex = false, alllin = false, big = false, dual = false, json = false;
@@ -282,11 +418,18 @@ int main(int argc, char** argv) {
         auto num = [&](int j) { return j < argc ? strtoull(argv[j], nullptr, 0) : 0ULL; };
         auto has = [&](int j) { return j < argc && isdigit((unsigned char)argv[j][0]); };
         if (a == "--selftest") return selftest() ? 1 : 0;
+        else if (a == "--selftest-p") {  // the tests of the p-ary solver only
+            int checks = 0;
+            const int fails = pary_selftest(checks);
+            printf("selftest: %d checks, %d failures\n", checks, fails);
+            return fails ? 1 : 0;
+        }
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else if (a == "--suite") run_suite = 3;
         else if (a == "--suite-bent") run_suite = 1;
         else if (a == "--suite-other") run_suite = 2;
         else if (a == "--big") big = true;
+        else if (a == "--p" && has(i + 1)) ++i;  // --p 2: the binary solver
         else if (a == "--hex") hex = true;
         else if (a == "--json") json = true;
         else if (a == "--all-linear") alllin = true;

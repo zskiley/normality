@@ -5,6 +5,9 @@ Finds the largest `k` such that a Boolean function `f : F_2^n -> F_2` is
 The answer is exact and comes with a flat that attains it. Practical for `n`
 up to about 20.
 
+Functions `f : F_p^n -> F_p` for an odd prime `p` (up to 61) are handled too,
+see [Odd characteristic](#odd-characteristic).
+
 ## Install
 
 ```bash
@@ -70,6 +73,35 @@ which can be much faster. They can come from three places:
 
 Every map is checked against the truth table before it is used.
 
+## Odd characteristic
+
+With `p=` (Python) or `--p` (command line) the function goes from `F_p^n` to
+`F_p`. The table then has `p^n` values `0 .. p-1`; value number
+`x_0 + x_1 p + ... + x_(n-1) p^(n-1)` is `f(x_0, ..., x_(n-1))`, and points
+and basis vectors are reported as such integers.
+
+```python
+r = normality.solve("012120201", p=3)             # f(x_0, x_1) = x_0 + x_1 over F_3
+r.k, r.value, r.offset, r.basis
+r.coordinates(r.basis[0])                         # (x_0, ..., x_(n-1)) of a vector
+normality.solve(lambda x: (x % 5) * (x // 5 % 5) % 5, n=2, p=5)   # x_0 x_1 over F_5
+normality.is_k_normal(table, 3, p=3)
+normality.family("power", 10, 14, p=3)            # Tr(x^14) over GF(3^10); see normality.PFAMILIES
+```
+
+```bash
+./normality --p 3 012120201
+```
+
+```bash
+./normality --p 3 --power 10 14
+```
+
+For `p <= 7` a table given as text has one digit per value; for larger `p`
+the values are numbers separated by spaces or commas. Tables of up to a few
+million values are practical (for `p = 3` that is `n` up to 12 to 14). The
+symmetry options are for `p = 2` only.
+
 ## Tests
 
 ```bash
@@ -84,4 +116,5 @@ python -m unittest test_normality
 
 An upper bound from the Walsh spectrum, a greedy lower bound, then an
 exhaustive search over direction spaces using bitset quotients. The details
-are in the comments at the top of `solver.hpp`, `search.hpp` and `group.hpp`.
+are in the comments at the top of `solver.hpp`, `search.hpp` and `group.hpp`,
+and of `pary.hpp` for odd `p`.
