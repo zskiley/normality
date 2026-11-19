@@ -24,6 +24,11 @@ the coordinates x_0, x_1, ...
     normality.solve(lambda x: (x % 3) * (x // 3 % 3) % 3, n=2, p=3)
     normality.family("power", 10, 14, p=3)       # Tr(x^14) over GF(3^10)
 
+Symmetry is used by default: the symmetries known from the construction of a
+built-in family, and, for p = 2, the automorphism group computed in the
+background by the equivalence library once a search has taken a while.
+aut=False and known_symmetry=False switch these off.
+
 The work is done by the C++ program in this folder.  It is compiled on first
 use (g++ is needed), or explicitly with normality.build().  The equivalence
 library in third_party/aleq (a git submodule) is built in if it is there.
@@ -336,13 +341,15 @@ def _options(target, threads, aut, aut_seconds, extra) -> list:
         args += ["--target", str(int(target))]
     if threads is not None:
         args += ["-t", str(int(threads))]
-    if aut:
+    if aut:                     # asked for: start the library at once
         args += ["--aut", str(float(aut_seconds))]
+    elif aut is not None:       # switched off
+        args += ["--no-aut"]
     return args + [str(a) for a in extra]
 
 
 def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional[int] = None,
-          threads: Optional[int] = None, aut: bool = False, aut_seconds: float = 60.0,
+          threads: Optional[int] = None, aut: Optional[bool] = None, aut_seconds: float = 60.0,
           maps: Optional[Iterable[Sequence[int]]] = None, verbose: bool = False,
           extra_args: Sequence[str] = ()) -> Result:
     """Largest k such that f is constant on a k-dimensional flat, with such a flat.
@@ -359,11 +366,12 @@ def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional
                  f(A x) = s(f(x)).  aut is for p = 2 only.
     target       only decide whether f is target-normal; see Result.exact.
     threads      worker threads (default: all cores).
-    aut          let the external equivalence library compute the automorphism
-                 group while the search runs (for at most aut_seconds), and use
-                 it to search one flat per orbit.  Needs a build with the
-                 library.  It does not finish on bent functions in 12 or more
-                 variables; see README.md.
+    aut          the external equivalence library computes the automorphism
+                 group while the search runs (for at most aut_seconds), and it
+                 is used to search one flat per orbit.  By default (None) this
+                 happens once a search has taken a while, if the solver was
+                 built with the library; True starts it at once, False never.
+                 It does not finish on bent functions in 12 or more variables.
     maps         automorphisms of f that you know: each one a sequence of n+1
                  integers, the images of the unit vectors e_0 .. e_(n-1)
                  followed by the image of 0.  Every map is verified by the
@@ -390,7 +398,8 @@ def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional
             args = []
         with os.fdopen(fd, "w") as fh:
             fh.write(s)
-        args += ["-f", path] + (["-v"] if verbose else []) + _options(target, threads, aut, aut_seconds, extra_args)
+        args += ["-f", path] + (["-v"] if verbose else [])
+        args += _options(target, threads, aut if p == 2 else None, aut_seconds, extra_args)
         if maps is not None:
             fd, mpath = tempfile.mkstemp(prefix="normality_", suffix=".maps")
             tmp.append(mpath)
@@ -427,19 +436,19 @@ def is_normal(table: Table, n: Optional[int] = None, **options) -> bool:
 
 
 def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = (), dual: bool = False,
-           plus: int = 0, hyp: int = 0, scramble: int = 0, known_symmetry: bool = False,
-           target: Optional[int] = None, threads: Optional[int] = None, aut: bool = False,
+           plus: int = 0, hyp: int = 0, scramble: int = 0, known_symmetry: Optional[bool] = None,
+           target: Optional[int] = None, threads: Optional[int] = None, aut: Optional[bool] = None,
            aut_seconds: float = 60.0, verbose: bool = False, extra_args: Sequence[str] = ()) -> Result:
     """Solve one of the built-in families (see FAMILIES), e.g. family("kasami", 14).
 
     The modifiers are applied in this order: dual (the dual of a bent
     function), plus=u (add the linear function <u, x>), hyp=r (add r hyperbolic
     pairs y1 y2 + ..., 2r more variables), scramble=seed (a random affine
-    change of variables).  known_symmetry=True uses the symmetries known from
-    the construction.
+    change of variables).  The symmetries known from the construction are used
+    unless known_symmetry=False; aut is as in solve().
 
     With an odd prime p the families are those in PFAMILIES and the only
-    modifiers are scramble and, for "power", known_symmetry;
+    modifier is scramble; known_symmetry applies to "power";
     family("power", N, D, E, p=p, more=[(D2, E2)]) is
     Tr(g^E x^D + g^E2 x^D2) over GF(p^N).
     """
@@ -448,17 +457,17 @@ def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = 
         if name not in PFAMILIES:
             raise ValueError(f"unknown family '{name}' for p = {p}; one of: " + ", ".join(sorted(PFAMILIES)))
         if dual or plus or hyp or aut or (known_symmetry and name != "power"):
-            raise ValueError("for odd p the only modifiers are scramble and, for \"power\", known_symmetry")
+            raise ValueError("for odd p the only modifier is scramble, and known_symmetry is for \"power\"")
         args = ["--p", str(p), "--" + name] + [str(int(v)) for v in params]
         for term in more:
             args += ["--power", str(int(params[0]))] + [str(int(v)) for v in term]
         if scramble:
             args += ["--scramble", str(int(scramble))]
-        if known_symmetry:
-            args.append("--aut-known")
+        if known_symmetry is not None:
+            args.append("--aut-known" if known_symmetry else "--no-aut-known")
         if verbose:
             args.append("-v")
-        return _run(args + _options(target, threads, False, 0, extra_args), verbose)
+        return _run(args + _options(target, threads, None, 0, extra_args), verbose)
     if name not in FAMILIES:
         raise ValueError(f"unknown family '{name}'; one of: " + ", ".join(sorted(FAMILIES)))
     args = ["--" + name] + [str(int(v)) for v in params]
@@ -470,8 +479,8 @@ def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = 
         args += ["--hyp", str(int(hyp))]
     if scramble:
         args += ["--scramble", str(int(scramble))]
-    if known_symmetry:
-        args.append("--aut-known")
+    if known_symmetry is not None:
+        args.append("--aut-known" if known_symmetry else "--no-aut-known")
     if verbose:
         args.append("-v")
     return _aut_warning(_run(args + _options(target, threads, aut, aut_seconds, extra_args), verbose))

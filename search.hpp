@@ -49,6 +49,7 @@ struct Options {
     const std::vector<AffMap>* sym_cands = nullptr;  // candidate automorphisms; each is checked before use
     AutStart aut_source = nullptr;                   // computes the automorphism group, e.g. an external library
     double aut_budget = 0;                           // seconds it may take; 0 = do not use it
+    double aut_delay = 0;                            // seconds of exhaustive search before it is started
     bool sym_coords = true;                          // also try coordinates adapted to the group
     bool sym_mates = true;                           // compare with the images that also start with the first direction
     u64 sym_allowance = (u64)1 << 27;                // work a subtree may take before it is split among threads

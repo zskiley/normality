@@ -746,6 +746,19 @@ static int selftest() {
                     used += r.sym_gens > 0;
                 }
             }
+            // the library is only started after the searches have taken a while
+            g_fake_gens = sp.sym;
+            g_fake_delay = 0;
+            Options os = def;
+            os.aut_source = fake_start;
+            os.aut_budget = 10;
+            os.aut_delay = 1e6;  // never
+            Result r = solve(sp.F, sp.n, os);
+            expect(r.k == plain.k && !r.sym_loaded && r.sym_gens == 0, "library started before it was due", sp.n, idx);
+            os.aut_delay = 0.002;
+            os.threads = 2;
+            r = solve(sp.F, sp.n, os);
+            expect(r.k == plain.k, "solver with a library started late disagrees", sp.n, idx);
         }
         expect(used > 0, "no group from the stand-in library was used", 0, 0);
     }

@@ -171,6 +171,19 @@ def brute_force_p(vals, p, n):
     return -1
 
 
+class Defaults(unittest.TestCase):
+    def test_symmetry_is_used_by_default(self):
+        off = normality.family("inverse", 13, known_symmetry=False, aut=False)
+        on = normality.family("inverse", 13)
+        self.assertEqual(on.k, off.k)
+        self.assertEqual(off.symmetry["generators"], 0)
+        self.assertGreater(on.symmetry["generators"], 0)
+        self.assertGreater(on.symmetry["skipped"], 0)
+        rng = random.Random(4)
+        bits = [rng.randrange(2) for _ in range(1 << 10)]
+        self.assertEqual(normality.solve(bits).k, normality.solve(bits, aut=False).k)
+
+
 class OddCharacteristic(unittest.TestCase):
     def test_against_brute_force(self):
         rng = random.Random(5)
@@ -245,11 +258,12 @@ class OddCharacteristic(unittest.TestCase):
             normality.family("kasami", 8, p=3)
 
     def test_symmetry(self):
-        plain = normality.family("power", 8, 14, 1, p=3)
-        sym = normality.family("power", 8, 14, 1, p=3, known_symmetry=True)
-        self.assertEqual(sym.k, plain.k)
-        self.assertEqual(sym.symmetry["generators"], 2)
-        self.assertGreater(sym.symmetry["skipped"], 0)
+        plain = normality.family("power", 8, 14, 1, p=3, known_symmetry=False)
+        self.assertFalse(plain.symmetry["looked_at"])
+        for sym in (normality.family("power", 8, 14, 1, p=3), normality.family("power", 8, 14, 1, p=3, known_symmetry=True)):
+            self.assertEqual(sym.k, plain.k)       # used by default
+            self.assertEqual(sym.symmetry["generators"], 2)
+            self.assertGreater(sym.symmetry["skipped"], 0)
         # a function of the cyclic classes of (x_0, ..., x_4) over F_3: the rotation is a symmetry
         n, p = 5, 3
         rot = lambda x: x // p + (x % p) * p ** (n - 1)

@@ -38,10 +38,13 @@ static void usage() {
          "  --scramble SEED  then apply a random affine change of variables\n"
          "  --all-linear     solve f + <u, x> for every u and print the distribution of k\n"
          "  --target K       only decide whether f is K-normal (much cheaper than the maximum)\n"
-         "symmetry (automorphisms A of f, f(Ax) = f(x) or f(x) + 1; every map is verified before use):\n"
-         "  --aut [SEC]      compute the automorphism group with the external equivalence library, in the\n"
-         "                   background, for at most SEC seconds (default 60); needs a build with the library\n"
-         "  --aut-known      use the symmetries known from the construction of a built-in family\n"
+         "symmetry (automorphisms A of f, f(Ax) = f(x) or f(x) + 1; every map is verified before use).\n"
+         "Used by default: the symmetries known from the construction of a built-in family, and, once an\n"
+         "exhaustive search has taken a while, the automorphism group computed in the background by the\n"
+         "external equivalence library (if it was built in), for at most 60 seconds.\n"
+         "  --no-aut         do not use the library\n"
+         "  --no-aut-known   do not use the known symmetries\n"
+         "  --aut [SEC]      start the library at once, for at most SEC seconds (default 60)\n"
          "  --aut-file FILE  read candidate maps: one per line, the images of e_0 .. e_(n-1), then A(0)\n"
          "  --sym-given      keep the given coordinates (do not try coordinates adapted to the group)\n"
          "  --no-mates       use the whole group for the first direction only\n"
@@ -54,7 +57,8 @@ static void usage() {
          "    --quad N [T]       quadratic form x0 x1 + x2 x3 + ... (T = 1: the elliptic one, x0^2 - c x1^2 + ...)\n"
          "    --random N [SEED]  uniformly random function\n"
          "                   and of the options above: -f, -t, -v, --json, --scramble, --target, and\n"
-         "    --aut-known        use the maps x -> a x^(P^i) of the field that are symmetries of a --power function\n"
+         "    --no-aut-known     do not use the maps x -> a x^(P^i) of the field that are symmetries of a\n"
+         "                       --power function (they are used by default; there is no library for odd P)\n"
          "    --aut-file FILE    candidate maps A with f(A x) = f(x), or = s(f(x)) for a permutation s of the\n"
          "                       values: one per line, the images of e_0 .. e_(n-1), then A(0), as point numbers\n"
          "other:\n"
@@ -196,7 +200,7 @@ static int pary_main(int argc, char** argv, int p) {
     if (!F.init(p)) { fprintf(stderr, "--p needs a prime between 2 and 61\n"); return 2; }
     Options opt;
     opt.threads = std::max(1u, std::thread::hardware_concurrency());
-    bool json = false, known = false, field = false;
+    bool json = false, known = true, known_asked = false, field = false;
     int target = -1, mode = 0, n = -1;
     u64 scr = 0;
     std::string table, aut_file;
@@ -215,7 +219,9 @@ static int pary_main(int argc, char** argv, int p) {
         else if (a == "-t" && has(i + 1)) opt.threads = std::max(1, (int)num(++i));
         else if (a == "--sparse-weight" && i + 1 < argc) opt.sparse_weight = atof(argv[++i]);
         else if (a == "--p-mode" && has(i + 1)) mode = (int)num(++i);  // 1: lists only, 2: bitsets wherever possible
-        else if (a == "--aut-known") known = true;
+        else if (a == "--aut-known") known = known_asked = true;
+        else if (a == "--no-aut-known") known = false;
+        else if (a == "--no-aut") {}  // the library is for p = 2 only
         else if (a == "--aut-file" && i + 1 < argc) aut_file = argv[++i];
         else if (a == "-f" && i + 1 < argc) {
             std::ifstream in(argv[++i]);
@@ -256,7 +262,7 @@ static int pary_main(int argc, char** argv, int p) {
     if (known && field) {
         PGF K;
         if (K.init(p, n)) pa_field_maps(K, f, maps);
-    } else if (known) fprintf(stderr, "note: --aut-known applies to --power functions only\n");
+    } else if (known_asked) fprintf(stderr, "note: --aut-known applies to --power functions only\n");
     if (scr) {
         f = pa_scramble(f, p, n, scr);
         pa_scramble_maps(p, n, scr, maps);
@@ -444,14 +450,20 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--p") && atoi(argv[i + 1]) != 2) return pary_main(argc, argv, atoi(argv[i + 1]));
     Options opt;
     opt.threads = std::max(1u, std::thread::hardware_concurrency());
-    bool hex = false, alllin = false, big = false, dual = false, json = false;
+    if (aut_library_built()) {  // by default the library is asked once a search has taken a while
+        opt.aut_source = aut_library_start;
+        opt.aut_budget = 60.0;
+        opt.aut_delay = 0.3;
+    }
+    bool hex = false, alllin = false, big = false, dual = false, json = false, aut_asked = false;
     int run_suite = 0;
     u32 plus = 0;
     int target = -1, hyp = 0;
     u64 scr = 0;
     std::string table, aut_file;
+    g_known_sym = true;  // the symmetries known from a construction are used by default
     for (int i = 1; i < argc; ++i)
-        if (!strcmp(argv[i], "--aut-known")) g_known_sym = true;
+        if (!strcmp(argv[i], "--no-aut-known") || !strcmp(argv[i], "--selftest")) g_known_sym = false;
     Spec sp;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -483,12 +495,15 @@ int main(int argc, char** argv) {
         else if (a == "--no-shadow") opt.use_shadow = false;
         else if (a == "--no-prefix") opt.use_prefix = false;
         else if (a == "--no-quick") opt.use_quick = false;
-        else if (a == "--aut-known") {}
+        else if (a == "--aut-known" || a == "--no-aut-known") {}
+        else if (a == "--no-aut") opt.aut_source = nullptr;
         else if (a == "--sym-given") opt.sym_coords = false;
         else if (a == "--no-mates") opt.sym_mates = false;
         else if (a == "--aut") {
             opt.aut_budget = has(i + 1) ? atof(argv[++i]) : 60.0;
             opt.aut_source = aut_library_start;
+            opt.aut_delay = 0;
+            aut_asked = true;
         } else if (a == "--aut-file" && i + 1 < argc) aut_file = argv[++i];
         else if (a == "-t" && has(i + 1)) opt.threads = std::max(1, (int)num(++i));
         else if (a == "--sparse-weight" && i + 1 < argc) opt.sparse_weight = atof(argv[++i]);
@@ -543,7 +558,7 @@ int main(int argc, char** argv) {
         } else if (a[0] != '-') table = a;
         else { usage(); return 2; }
     }
-    if (opt.aut_source && !aut_library_built())
+    if (aut_asked && !aut_library_built())
         fprintf(stderr, "note: this binary was built without the equivalence library, --aut has no effect (see README.md)\n");
     if (run_suite) { suite(opt, big, run_suite); return 0; }
     if (sp.n < 0) {

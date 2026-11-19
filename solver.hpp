@@ -487,7 +487,8 @@ static Result solve(const std::vector<u64>& F, int n, const Options& opt, int gr
     Recoord rc, rcg;                     // random coordinates; coordinates adapted to the group
     std::atomic<bool> sym_ready(false);  // symA is final and may be read
     std::atomic<bool> sym_flip(false);   // some map takes f to f + 1
-    std::atomic<bool> lib_open(false);   // the library is running and its answer is still to come
+    std::atomic<bool> lib_open(false);   // the library is to run or running, and its answer is still to come
+    double lib_due = 0;                  // when it is started: only searches that take a while are worth it
     std::unique_ptr<AutJob> job;
     std::mutex mu, mu_sym;
     std::vector<LMap> keepers, flips;    // linear parts of the verified maps
@@ -567,6 +568,15 @@ static Result solve(const std::vector<u64>& F, int n, const Options& opt, int gr
         if (!lib_open.load()) return false;
         std::lock_guard<std::mutex> g(mu_sym);
         if (!lib_open.load()) return false;
+        if (!job) {  // not started yet
+            if (now_sec() < lib_due) return false;
+            job.reset(opt.aut_source(S[1].data(), m, opt.aut_budget));
+            R.sym_loaded = true;
+            if (job) return false;
+            R.sym_note = "library: could not be started";
+            lib_open.store(false);
+            return true;
+        }
         std::vector<AffMap> lib;
         std::string note;
         int st = job->poll(lib, note);
@@ -755,11 +765,9 @@ static Result solve(const std::vector<u64>& F, int n, const Options& opt, int gr
         if (!cands_seen) {
             cands_seen = true;
             if (opt.sym_cands && !opt.sym_cands->empty()) load_cands();
-            if (!sym_ready.load() && opt.aut_source && opt.aut_budget > 0) {  // nothing usable yet: start the library
-                job.reset(opt.aut_source(S[1].data(), m, opt.aut_budget));
-                if (job) lib_open.store(true);
-                else R.sym_note = "library: could not be started";
-                R.sym_loaded = true;
+            if (!sym_ready.load() && opt.aut_source && opt.aut_budget > 0) {  // nothing usable yet: the library
+                lib_due = now_sec() + opt.aut_delay;
+                lib_open.store(true);  // poll_library starts it when it is due
             }
         }
         poll_library();
@@ -793,7 +801,7 @@ static Result solve(const std::vector<u64>& F, int n, const Options& opt, int gr
     }
     if (lib_open.load()) {  // the searches are over before the library was
         std::lock_guard<std::mutex> g(mu_sym);
-        job->stop(R.sym_note);
+        if (job) job->stop(R.sym_note);
         lib_open.store(false);
     }
     job.reset();

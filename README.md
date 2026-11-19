@@ -36,7 +36,7 @@ normality.family("kasami", 14)    # a built-in family; normality.FAMILIES lists 
 ```
 
 `solve` also takes `target=k`, `threads=`, `verbose=True`, and the symmetry
-options `aut=True` and `maps=[...]` described below.
+options `aut=` and `maps=[...]` described below.
 
 ## Command line
 
@@ -55,21 +55,23 @@ python normality.py build
 To compile by hand without Python:
 `g++ -O3 -march=native -std=c++17 -pthread -o normality main.cpp`
 (with MinGW-w64 on Windows add `-static -Wa,-muse-unaligned-vector-move`).
-That build has everything except `--aut`.
+That build has everything except the equivalence library.
 
 ## Symmetry
 
-If automorphisms of `f` are known, the search looks at one flat per orbit,
-which can be much faster. They can come from three places:
+With automorphisms of `f` the search looks at one flat per orbit, which can
+be much faster. Two sources are used by default:
 
-- `--aut` / `aut=True`: computed by the
+- the automorphism group computed by the
   [equivalence library](https://github.com/zskiley/Affine-and-linear-equivalence-algorithms)
-  (the submodule in `third_party/aleq`) while the search runs. It does not
-  finish for bent functions in 12 or more variables.
-- `--aut-known` / `known_symmetry=True`: the symmetries known from the
-  construction of a built-in family.
-- `--aut-file FILE` / `maps=[...]`: maps you supply, each as the images of
-  `e_0 .. e_(n-1)` followed by the image of 0.
+  (the submodule in `third_party/aleq`), in the background, once a search has
+  taken more than a moment. It does not finish for bent functions in 12 or
+  more variables. Off with `--no-aut` / `aut=False`.
+- the symmetries known from the construction of a built-in family. Off with
+  `--no-aut-known` / `known_symmetry=False`.
+
+You can also supply maps yourself with `--aut-file FILE` / `maps=[...]`, each
+as the images of `e_0 .. e_(n-1)` followed by the image of 0.
 
 Every map is checked against the truth table before it is used.
 
@@ -101,12 +103,12 @@ For `p <= 7` a table given as text has one digit per value; for larger `p`
 the values are numbers separated by spaces or commas. Tables of up to a few
 million values are practical (for `p = 3` that is `n` up to 12 to 14).
 
-Symmetry works here as well, except for `--aut` (the library is binary
-only). Maps are given with `--aut-file` / `maps=[...]` as above, with points
-as integers; a map may also permute the values of `f`, i.e.
-`f(A x) = s(f(x))`, and then only one of the constants that `s` links is
-searched. For the `power` family, `--aut-known` / `known_symmetry=True` finds
-the maps `x -> a x^(p^i)` of the field that are symmetries.
+Symmetry works here as well, but the library is binary only: by default it
+is used for the `power` family (the maps `x -> a x^(p^i)` of the field that
+are symmetries), and for a table only if you supply maps with `--aut-file` /
+`maps=[...]` as above, with points as integers. A map may also permute the
+values of `f`, i.e. `f(A x) = s(f(x))`; then only one of the constants that
+`s` links is searched.
 
 ## Tests
 
