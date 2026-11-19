@@ -53,7 +53,10 @@ static void usage() {
          "    --mm N [SEED]      Maiorana-McFarland bent function\n"
          "    --quad N [T]       quadratic form x0 x1 + x2 x3 + ... (T = 1: the elliptic one, x0^2 - c x1^2 + ...)\n"
          "    --random N [SEED]  uniformly random function\n"
-         "                   and of the options above: -f, -t, -v, --json, --scramble, --target\n"
+         "                   and of the options above: -f, -t, -v, --json, --scramble, --target, and\n"
+         "    --aut-known        use the maps x -> a x^(P^i) of the field that are symmetries of a --power function\n"
+         "    --aut-file FILE    candidate maps A with f(A x) = f(x), or = s(f(x)) for a permutation s of the\n"
+         "                       values: one per line, the images of e_0 .. e_(n-1), then A(0), as point numbers\n"
          "other:\n"
          "  --suite [--big]  run the built-in collection of structured functions (--big adds the slow ones);\n"
          "                   --suite-bent / --suite-other run one half of it\n"
@@ -131,6 +134,8 @@ static void print_json(const Result& r, int n, int target, const TT& F) {
 }
 
 // ------------------------------------------------------------ odd characteristic
+static bool read_maps(const char* path, int n, std::vector<AffMap>& out);
+
 static std::string pa_vec(u32 x, int p, int n) {  // the coordinates x_0 .. x_(n-1)
     std::string o;
     for (int i = 0; i < n; ++i, x /= p) {
@@ -156,6 +161,13 @@ static void pa_report(const PResult& r) {
     else
         printf("optimality: %d exhaustive searches (%llu dense nodes, %llu sparse nodes, %llu candidates)\n", r.searches,
                (unsigned long long)r.st.dense_nodes, (unsigned long long)r.st.sparse_nodes, (unsigned long long)r.st.cands);
+    if (r.sym_looked) {
+        printf("symmetry: %d of %d maps are symmetries", r.sym_used, r.sym_offered);
+        if (r.sym_used)
+            printf("; %d classes of constants, one constant of each searched; %llu first directions skipped",
+                   r.sym_classes, (unsigned long long)r.st.sym_skipped);
+        printf("%s%s\n", r.sym_note.empty() ? "" : "; ", r.sym_note.c_str());
+    }
     printf("time: %.3f s\n", r.seconds);
 }
 
@@ -170,8 +182,12 @@ static void pa_print_json(const PResult& r, int target) {
     printf(", \"max_walsh\": %.9g, \"bent\": %s", r.max_walsh, r.bent ? "true" : "false");
     printf(", \"searches\": %d, \"dense_nodes\": %llu, \"sparse_nodes\": %llu, \"candidates\": %llu", r.searches,
            (unsigned long long)r.st.dense_nodes, (unsigned long long)r.st.sparse_nodes, (unsigned long long)r.st.cands);
-    printf(", \"symmetry\": {\"looked_at\": false, \"generators\": 0, \"order\": 0, \"flip\": false, \"skipped\": 0, "
-           "\"note\": \"\"}");
+    int values = 0;
+    for (int c = 0; c < r.p; ++c) values += r.ub[c] >= 0;
+    printf(", \"symmetry\": {\"looked_at\": %s, \"generators\": %d, \"order\": %.0f, \"flip\": %s, \"skipped\": %llu, "
+           "\"classes\": %d, \"note\": \"%s\"}",
+           r.sym_looked ? "true" : "false", r.sym_used, r.sym_order, r.sym_used && r.sym_classes < values ? "true" : "false",
+           (unsigned long long)r.st.sym_skipped, r.sym_classes, r.sym_note.c_str());
     printf(", \"seconds\": %.6f}\n", r.seconds);
 }
 
@@ -180,10 +196,10 @@ static int pary_main(int argc, char** argv, int p) {
     if (!F.init(p)) { fprintf(stderr, "--p needs a prime between 2 and 61\n"); return 2; }
     Options opt;
     opt.threads = std::max(1u, std::thread::hardware_concurrency());
-    bool json = false;
+    bool json = false, known = false, field = false;
     int target = -1, mode = 0, n = -1;
     u64 scr = 0;
-    std::string table;
+    std::string table, aut_file;
     PT f;
     auto fits = [&](int nn) { return nn >= 1 && nn <= F.maxdim && F.pw[nn] <= 60000000; };
     for (int i = 1; i < argc; ++i) {
@@ -199,6 +215,8 @@ static int pary_main(int argc, char** argv, int p) {
         else if (a == "-t" && has(i + 1)) opt.threads = std::max(1, (int)num(++i));
         else if (a == "--sparse-weight" && i + 1 < argc) opt.sparse_weight = atof(argv[++i]);
         else if (a == "--p-mode" && has(i + 1)) mode = (int)num(++i);  // 1: lists only, 2: bitsets wherever possible
+        else if (a == "--aut-known") known = true;
+        else if (a == "--aut-file" && i + 1 < argc) aut_file = argv[++i];
         else if (a == "-f" && i + 1 < argc) {
             std::ifstream in(argv[++i]);
             if (!in) { fprintf(stderr, "cannot open %s\n", argv[i]); return 2; }
@@ -221,6 +239,7 @@ static int pary_main(int argc, char** argv, int p) {
                 return 2;
             }
             n = nn;
+            field = true;
         } else if (a[0] != '-') table = a;
         else {
             fprintf(stderr, "option %s is not available with --p %d\n", a.c_str(), p);
@@ -233,8 +252,29 @@ static int pary_main(int argc, char** argv, int p) {
         if (n < 1) { fprintf(stderr, "bad table: need exactly %d^n values between 0 and %d\n", p, p - 1); return 2; }
     }
     if (!fits(n)) { fprintf(stderr, "too large: at most 60 million points\n"); return 2; }
-    if (scr) f = pa_scramble(f, p, n, scr);
-    PResult r = pa_solve(f, p, n, opt, target, mode);
+    std::vector<PMap> maps;
+    if (known && field) {
+        PGF K;
+        if (K.init(p, n)) pa_field_maps(K, f, maps);
+    } else if (known) fprintf(stderr, "note: --aut-known applies to --power functions only\n");
+    if (scr) {
+        f = pa_scramble(f, p, n, scr);
+        pa_scramble_maps(p, n, scr, maps);
+    }
+    if (!aut_file.empty()) {
+        std::vector<AffMap> am;
+        if (!read_maps(aut_file.c_str(), n, am)) {
+            fprintf(stderr, "cannot read the maps in %s\n", aut_file.c_str());
+            return 2;
+        }
+        for (const AffMap& m : am) {
+            PMap pm;
+            pm.col = m.col;
+            pm.t = m.t;
+            maps.push_back(pm);
+        }
+    }
+    PResult r = pa_solve(f, p, n, opt, target, mode, 3, maps.empty() ? nullptr : &maps);
     if (json) {
         pa_print_json(r, target);
         return 0;

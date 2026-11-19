@@ -11,6 +11,9 @@
 //      (p^(n-k) - 1) max_{u != 0} |B(u)| >= p^n - #{f = c};
 //   3. a lower bound from a randomised greedy descent;
 //   4. exhaustive decision searches for t = upper bound, upper bound - 1, ...
+//      With maps under which f is invariant up to a permutation of its
+//      values, fewer constants and fewer first directions are searched
+//      (psym.hpp).
 //
 // The search picks the reduced echelon basis v_1, ..., v_j of the direction
 // space in order of increasing leading coordinate (the highest non-zero one,
@@ -419,6 +422,9 @@ struct PCtx {
     u64 leaf = 0;
     // If set: called at the root in place of the loop over the children of one pass.
     std::function<bool(Sp&, int, int)> kid_hook;
+    // If set: bit v says that the first direction v (as an index; leading coordinate <= roothi) is not to be tried.
+    const std::vector<u64>* rootskip = nullptr;
+    int roothi = 0;
 
     void init(const PField* f, int n, const Options* o, std::atomic<bool>* s, int md) {
         F = f;
@@ -784,7 +790,12 @@ struct PCtx {
         S.viable.clear();
         u32 total = 0;
         for (u32 s = 0; s < nslot; ++s) {
-            if (top ? S.stamp[s] == round : S.scnt[s] >= need) {
+            bool take = top ? S.stamp[s] == round : S.scnt[s] >= need;
+            if (take && d == 0 && rootskip && !cells) {
+                const u64 v = F->index(S.sdir[s], roothi + 1);
+                if (((*rootskip)[v >> 6] >> (v & 63)) & 1) take = false, ++st.sym_skipped;
+            }
+            if (take) {
                 S.soff[s] = total;
                 total += S.scnt[s];
                 S.viable.push_back(s);
@@ -869,9 +880,10 @@ static bool pa_constant_on_flat(const PField& F, const uint8_t* f, int n, u32 a,
     }
 }
 
-// Exhaustive: does {x : f(x) = cst} contain a k-flat?
+// Exhaustive: does {x : f(x) = cst} contain a k-flat?  rootskip: first directions
+// that need not be tried (see PCtx::rootskip), as a symmetry maps them to smaller ones.
 static bool pa_decide(const PField& F, const uint8_t* f, int n, int cst, int k, const Options& opt, PFlat& fl, Stats& st,
-                      int mode = 0) {
+                      int mode = 0, const std::vector<u64>* rootskip = nullptr) {
     const int p = F.p;
     const size_t N = F.pw[n];
     u64 total = 0;
@@ -911,6 +923,8 @@ static bool pa_decide(const PField& F, const uint8_t* f, int n, int cst, int k, 
         PCtx& root = ctx[0];
         root.ddepth = 0;
         root.sdim = n;
+        root.rootskip = rootskip;
+        root.roothi = n - k;
         if (nt > 1)
             root.kid_hook = [&](PCtx::Sp& S, int j, int pi) {
                 std::atomic<size_t> next(0);
@@ -950,8 +964,18 @@ static bool pa_decide(const PField& F, const uint8_t* f, int n, int cst, int k, 
             for (;;) {
                 u64 idx = next.fetch_add(1);
                 if (idx >= ncand || stop.load()) break;
+                // Alternately from both ends: most flats have the largest pivot, but with
+                // symmetry the flats that are left tend to have a small first direction.
+                idx = idx & 1 ? ncand - 1 - idx / 2 : idx / 2;
                 int pi = hi;  // the largest pivot first
                 while (idx >= F.pw[pi]) idx -= F.pw[pi--];  // idx is now the low part of the direction
+                if (rootskip) {
+                    const u64 v = idx + F.pw[pi];
+                    if (((*rootskip)[v >> 6] >> (v & 63)) & 1) {
+                        ++w.st.sym_skipped;
+                        continue;
+                    }
+                }
                 const size_t P = F.pw[pi];
                 if (w.trv[0].size() < (size_t)(p - 1) * P) w.trv[0].resize((size_t)(p - 1) * P);
                 ++w.st.cands;
@@ -1053,6 +1077,8 @@ static std::vector<u32> pa_linear_structures(const PField& F, const uint8_t* f, 
     return basis;
 }
 
+#include "psym.hpp"
+
 struct PResult {
     int p = 0, n = 0, k = -1, value = 0;
     u32 a = 0;
@@ -1063,12 +1089,21 @@ struct PResult {
     int searches = 0;
     double max_walsh = 0;
     bool bent = false;
+    // symmetry
+    bool sym_looked = false;  // an exhaustive search was needed, so the maps were looked at
+    int sym_offered = 0;      // maps offered
+    int sym_used = 0;         // maps with f(A x) = sigma(f(x))
+    int sym_classes = 0;      // classes of constants with points under their sigmas (one constant per class is searched)
+    double sym_order = 0;     // size of the largest group used to skip first directions (as far as it was listed)
+    std::string sym_note;
     Stats st;
     double seconds = 0;
 };
 
 // mode: see PCtx::mode (for the tests).  target >= 0: only decide whether f is target-normal.
-static PResult pa_solve(const PT& f0, int p, int n, const Options& opt, int target = -1, int mode = 0, int restarts = 3) {
+// maps: candidate symmetries (psym.hpp); each is checked before it is used.
+static PResult pa_solve(const PT& f0, int p, int n, const Options& opt, int target = -1, int mode = 0, int restarts = 3,
+                        const std::vector<PMap>* maps = nullptr) {
     const double t0 = now_sec();
     PResult R;
     R.p = p;
@@ -1148,13 +1183,109 @@ static PResult pa_solve(const PT& f0, int p, int n, const Options& opt, int targ
     R.greedy_k = bk + r;
     if (opt.verbose) fprintf(stderr, "greedy: flat of dimension %d\n", bk + r);
     // 4. exhaustive searches from the top
+    // Symmetry, prepared when the first exhaustive search is needed.
+    std::vector<PMat> symM;                // linear parts of the maps that passed the check
+    std::vector<std::vector<int>> symS;    // and how they permute the constants
+    std::vector<int> crep(p);              // smallest constant of the class of c
+    std::vector<PStab> stab(p);
+    bool sym_ready = false;
+    std::mt19937_64 srng(77);
+    auto prepare_sym = [&]() {
+        sym_ready = true;
+        for (int c = 0; c < p; ++c) crep[c] = c;
+        if (!maps || maps->empty()) return;
+        R.sym_looked = true;
+        R.sym_offered = (int)maps->size();
+        if (r) {
+            R.sym_note = "not used: the function has invariant linear structures";
+            return;
+        }
+        for (const PMap& a : *maps) {
+            PMat M;
+            std::vector<int> sg;
+            if (!pa_map_check(F, f.data(), m, a, M, sg)) continue;
+            symM.push_back(M);
+            symS.push_back(sg);
+            for (int c = 0; c < p; ++c) {  // c and sg[c] are in one class
+                const int x = crep[c], y = crep[sg[c]];
+                if (x != y)
+                    for (int& q : crep)
+                        if (q == std::max(x, y)) q = std::min(x, y);
+            }
+        }
+        R.sym_used = (int)symM.size();
+        for (int c = 0; c < p; ++c) R.sym_classes += crep[c] == c && sp.size[c] > 0;
+        if (opt.verbose)
+            fprintf(stderr, "symmetry: %d of %d maps are symmetries; %d classes of constants\n", R.sym_used, R.sym_offered,
+                    R.sym_classes);
+    };
     auto search = [&](int t) {
+        if (!sym_ready) prepare_sym();
         for (int c = 0; c < p; ++c) {
-            if (sp.ub[c] < t) continue;
+            if (sp.ub[c] < t || crep[c] != c) continue;
             ++R.searches;
             const double ts = now_sec();
             PFlat fl;
-            const bool hit = pa_decide(F, f.data(), m, c, t, opt, fl, R.st, mode);
+            bool hit;
+            if (!symM.empty() && !stab[c].ready) pa_stabiliser(F, c, symM, symS, stab[c]);
+            if (!symM.empty() && !stab[c].elems.empty() && t >= 2) {
+                // Coordinates y, x = Bm y, in which the first directions tried span an
+                // invariant subspace, as far as there is one of that dimension.  A subgroup can
+                // have one where the whole group has not, so the subspaces of the group and of
+                // each generator alone are tried; the directions skipped are always those that
+                // some element of the whole group makes smaller.
+                const int hi = m - t;
+                PMat Bm, Bi;
+                std::vector<u64> skip;
+                u64 nskip = 0;
+                int wdim = -1;
+                const size_t ngen = stab[c].gens.size();
+                for (size_t o = 0; o <= (ngen > 1 ? ngen : 0); ++o) {
+                    const std::vector<PMat> sub = o ? std::vector<PMat>(1, stab[c].gens[o - 1]) : stab[c].gens;
+                    const PSub W = pa_invariant_subspace(F, m, sub, hi + 1, srng);
+                    PSub all = W;
+                    PMat B2(m), B2i;
+                    int col = 0;
+                    for (const PVec& v : W.b) {
+                        for (int q = 0; q < m; ++q) B2.at(q, col) = v[q];
+                        ++col;
+                    }
+                    for (int i = 0; i < m; ++i) {
+                        PVec e(m, 0);
+                        e[i] = 1;
+                        if (all.add(e, F)) B2.at(i, col++) = 1;
+                    }
+                    pm_inv(B2, F, B2i);
+                    std::vector<PMat> el;
+                    for (const PMat& e : stab[c].elems) el.push_back(pm_mul(B2i, pm_mul(e, B2, p), p));
+                    u64 ns = 0;
+                    std::vector<u64> sk = pa_root_skip(F, hi, el, ns);
+                    if (wdim < 0 || ns > nskip) {
+                        Bm = B2, Bi = B2i, nskip = ns, wdim = W.dim();
+                        skip.swap(sk);
+                    }
+                }
+                PT g2(N);
+                pa_images(F, m, Bm, 0, [&](u32 y, u64 x) {
+                    g2[y] = f[F.unpack(x, m)];
+                    return true;
+                });
+                R.sym_order = std::max(R.sym_order, (double)stab[c].elems.size() + 1);
+                if (opt.verbose)
+                    fprintf(stderr, "  symmetry: %zu maps of the set to itself%s, invariant subspace of dimension %d (wanted %d), "
+                                    "%llu of %llu first directions skipped\n",
+                            stab[c].elems.size() + 1, stab[c].complete ? "" : " listed", wdim, hi + 1,
+                            (unsigned long long)nskip, (unsigned long long)((F.pw[hi + 1] - 1) / (p - 1)));
+                hit = pa_decide(F, g2.data(), m, c, t, opt, fl, R.st, mode, &skip);
+                if (hit) {  // back to the coordinates x
+                    fl.a = pv_index(pm_apply(Bm, pv_digits(fl.a, m, p), p), p);
+                    for (u32& bv : fl.basis) bv = pv_index(pm_apply(Bm, pv_digits(bv, m, p), p), p);
+                    if (!pa_constant_on_flat(F, f.data(), m, fl.a, fl.basis, c)) {
+                        fprintf(stderr, "internal error: the flat found with symmetry is not one of f\n");
+                        abort();
+                    }
+                }
+            } else hit = pa_decide(F, f.data(), m, c, t, opt, fl, R.st, mode);
             if (opt.verbose)
                 fprintf(stderr, "  %d-flat with f = %d: %s (%.2f s)\n", t + r, c, hit ? "found" : "none", now_sec() - ts);
             if (hit) {

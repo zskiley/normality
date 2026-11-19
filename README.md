@@ -99,8 +99,14 @@ normality.family("power", 10, 14, p=3)            # Tr(x^14) over GF(3^10); see 
 
 For `p <= 7` a table given as text has one digit per value; for larger `p`
 the values are numbers separated by spaces or commas. Tables of up to a few
-million values are practical (for `p = 3` that is `n` up to 12 to 14). The
-symmetry options are for `p = 2` only.
+million values are practical (for `p = 3` that is `n` up to 12 to 14).
+
+Symmetry works here as well, except for `--aut` (the library is binary
+only). Maps are given with `--aut-file` / `maps=[...]` as above, with points
+as integers; a map may also permute the values of `f`, i.e.
+`f(A x) = s(f(x))`, and then only one of the constants that `s` links is
+searched. For the `power` family, `--aut-known` / `known_symmetry=True` finds
+the maps `x -> a x^(p^i)` of the field that are symmetries.
 
 ## Tests
 

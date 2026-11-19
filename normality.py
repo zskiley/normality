@@ -67,7 +67,8 @@ FAMILIES = {
 
 # The families available with p=... (an odd prime).
 PFAMILIES = {
-    "power": "N D [E]   Tr(g^E x^D) over GF(p^N), g primitive; more=[(D, E), ...] adds further terms",
+    "power": "N D [E]   Tr(g^E x^D) over GF(p^N), g primitive; more=[(D, E), ...] adds further terms;\n"
+             "          known_symmetry=True uses the maps x -> a x^(p^i) that are symmetries",
     "mm": "N [SEED]  Maiorana-McFarland bent function",
     "quad": "N [T]     quadratic form x0 x1 + x2 x3 + ... (T = 1: the elliptic one)",
     "random": "N [SEED]  uniformly random function",
@@ -353,8 +354,9 @@ def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional
                  p^n values 0 .. p-1 (a string of digits for p <= 7, of numbers
                  separated by spaces or commas for larger p, or a sequence, or
                  a Python function with n), and the point x_0 + x_1 p + ... has
-                 the coordinates x_0, x_1, ...  The symmetry options aut and
-                 maps are for p = 2 only.
+                 the coordinates x_0, x_1, ...  maps can be given (points as
+                 such integers), and a map may also permute the values of f:
+                 f(A x) = s(f(x)).  aut is for p = 2 only.
     target       only decide whether f is target-normal; see Result.exact.
     threads      worker threads (default: all cores).
     aut          let the external equivalence library compute the automorphism
@@ -369,31 +371,27 @@ def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional
     verbose      let the solver print its progress to stderr.
     """
     p = _prime(p)
-    if p != 2:
-        if aut or maps is not None:
-            raise ValueError("the symmetry options are only available for p = 2")
-        vals = _values(table, n, p)
-        fd, path = tempfile.mkstemp(prefix="normality_", suffix=".tt")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(("" if p <= 7 else " ").join(str(v) for v in vals))
-            args = ["--p", str(p), "-f", path] + (["-v"] if verbose else [])
-            return _run(args + _options(target, threads, False, 0, extra_args), verbose)
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-    s = _bits(table, n)
+    if p != 2 and aut:
+        raise ValueError("aut=True (the equivalence library) is only available for p = 2")
     tmp = []
     try:
         fd, path = tempfile.mkstemp(prefix="normality_", suffix=".tt")
         tmp.append(path)
+        if p != 2:
+            vals = _values(table, n, p)
+            s = ("" if p <= 7 else " ").join(str(v) for v in vals)
+            nvar = 0
+            while p ** nvar < len(vals):
+                nvar += 1
+            args = ["--p", str(p)]
+        else:
+            s = _bits(table, n)
+            nvar = len(s).bit_length() - 1
+            args = []
         with os.fdopen(fd, "w") as fh:
             fh.write(s)
-        args = ["-f", path] + (["-v"] if verbose else []) + _options(target, threads, aut, aut_seconds, extra_args)
+        args += ["-f", path] + (["-v"] if verbose else []) + _options(target, threads, aut, aut_seconds, extra_args)
         if maps is not None:
-            nvar = len(s).bit_length() - 1
             fd, mpath = tempfile.mkstemp(prefix="normality_", suffix=".maps")
             tmp.append(mpath)
             with os.fdopen(fd, "w") as fh:
@@ -441,20 +439,23 @@ def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = 
     the construction.
 
     With an odd prime p the families are those in PFAMILIES and the only
-    modifier is scramble; family("power", N, D, E, p=p, more=[(D2, E2)]) is
+    modifiers are scramble and, for "power", known_symmetry;
+    family("power", N, D, E, p=p, more=[(D2, E2)]) is
     Tr(g^E x^D + g^E2 x^D2) over GF(p^N).
     """
     p = _prime(p)
     if p != 2:
         if name not in PFAMILIES:
             raise ValueError(f"unknown family '{name}' for p = {p}; one of: " + ", ".join(sorted(PFAMILIES)))
-        if dual or plus or hyp or known_symmetry or aut:
-            raise ValueError("for odd p the only modifier is scramble")
+        if dual or plus or hyp or aut or (known_symmetry and name != "power"):
+            raise ValueError("for odd p the only modifiers are scramble and, for \"power\", known_symmetry")
         args = ["--p", str(p), "--" + name] + [str(int(v)) for v in params]
         for term in more:
             args += ["--power", str(int(params[0]))] + [str(int(v)) for v in term]
         if scramble:
             args += ["--scramble", str(int(scramble))]
+        if known_symmetry:
+            args.append("--aut-known")
         if verbose:
             args.append("-v")
         return _run(args + _options(target, threads, False, 0, extra_args), verbose)

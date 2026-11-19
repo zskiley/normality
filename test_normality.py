@@ -244,6 +244,31 @@ class OddCharacteristic(unittest.TestCase):
         with self.assertRaises(ValueError):
             normality.family("kasami", 8, p=3)
 
+    def test_symmetry(self):
+        plain = normality.family("power", 8, 14, 1, p=3)
+        sym = normality.family("power", 8, 14, 1, p=3, known_symmetry=True)
+        self.assertEqual(sym.k, plain.k)
+        self.assertEqual(sym.symmetry["generators"], 2)
+        self.assertGreater(sym.symmetry["skipped"], 0)
+        # a function of the cyclic classes of (x_0, ..., x_4) over F_3: the rotation is a symmetry
+        n, p = 5, 3
+        rot = lambda x: x // p + (x % p) * p ** (n - 1)
+        def cls(x):
+            best = x
+            for _ in range(n):
+                x = rot(x)
+                best = min(best, x)
+            return best
+        vals = [(cls(x) * 7 + cls(x) // 5) % 2 for x in range(p ** n)]
+        maps = [[p ** ((j - 1) % n) for j in range(n)] + [0],          # the rotation
+                [p ** ((j + 1) % n) + (j == 0) for j in range(n)]]     # not a symmetry
+        plain = normality.solve(vals, p=p)
+        r = normality.solve(vals, p=p, maps=maps)
+        self.assertEqual(r.k, plain.k)
+        self.assertTrue(normality.check(vals, r))
+        if r.symmetry["looked_at"]:
+            self.assertEqual(r.symmetry["generators"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -148,6 +148,59 @@ static bool pa_add_monomial(PT& f, int p, int n, u64 d, u64 e) {
     return true;
 }
 
+// The maps x -> g^e x^(p^i) of GF(p^n) under which f is multiplied by a
+// constant, found by trying them (on a few points first): a generator of
+// those with i = 0, and one with the smallest i > 0 that has one.  These two
+// generate all of them.
+static void pa_field_maps(const PGF& K, const PT& f, std::vector<PMap>& out) {
+    const int p = K.p, n = K.n;
+    const u64 o = K.q - 1;
+    std::vector<uint8_t> fx(o);
+    for (u64 t = 0; t < o; ++t) fx[t] = f[K.ex[t]];
+    int inv[64] = {0};
+    for (int a = 1; a < p; ++a)
+        for (int b = 1; b < p; ++b)
+            if (a * b % p == 1) inv[a] = b;
+    std::mt19937_64 rng(4242);
+    std::vector<u64> ts;  // sample points with f != 0
+    for (int tries = 0; tries < 4000 && ts.size() < 16; ++tries) {
+        const u64 t = rng() % o;
+        if (fx[t]) ts.push_back(t);
+    }
+    if (ts.empty()) return;
+    std::vector<u64> tp(ts.size());
+    u64 pwi = 1;  // p^i modulo q - 1
+    for (int i = 0; i < n; ++i, pwi = pwi * p % o) {
+        for (size_t s = 0; s < ts.size(); ++s) tp[s] = ts[s] * pwi % o;
+        for (u64 e = i ? 0 : 1; e < o; ++e) {
+            u64 img = e + tp[0];
+            if (img >= o) img -= o;
+            if (!fx[img]) continue;
+            const int mu = fx[img] * inv[fx[ts[0]]] % p;
+            bool ok = mu * f[0] % p == f[0];
+            for (size_t s = 1; s < ts.size() && ok; ++s) {
+                img = e + tp[s];
+                if (img >= o) img -= o;
+                ok = fx[img] == mu * fx[ts[s]] % p;
+            }
+            if (!ok) continue;
+            img = e;
+            for (u64 t = 0; t < o && ok; ++t) {
+                ok = fx[img] == mu * fx[t] % p;
+                img += pwi;
+                if (img >= o) img -= o;
+            }
+            if (!ok) continue;
+            PMap a;
+            a.col.resize(n);
+            for (int j = 0; j < n; ++j) a.col[j] = K.ex[(e + (u64)j * pwi) % o];
+            out.push_back(a);
+            if (i) return;  // together with the one for i = 0 it generates the others
+            break;
+        }
+    }
+}
+
 // Random invertible matrix (columns as packed vectors) and shift.
 static void pa_random_affine(const PField& F, int n, u64 seed, std::vector<u64>& col, u64& shift) {
     std::mt19937_64 rng(seed);
@@ -195,6 +248,33 @@ static PT pa_scramble(const PT& f, int p, int n, u64 seed) {
         g[x] = f[F.unpack(y, n)];
     }
     return g;
+}
+
+// Symmetries of f as symmetries of pa_scramble(f, p, n, seed).
+static void pa_scramble_maps(int p, int n, u64 seed, std::vector<PMap>& maps) {
+    PField F;
+    F.init(p);
+    std::vector<u64> col;
+    u64 shift;
+    pa_random_affine(F, n, seed, col, shift);
+    PMat A(n), Ai;
+    for (int c = 0; c < n; ++c)
+        for (int r = 0; r < n; ++r) A.at(r, c) = F.digit(col[c], r);
+    pm_inv(A, F, Ai);
+    PVec b(n);
+    for (int r = 0; r < n; ++r) b[r] = F.digit(shift, r);
+    for (PMap& a : maps) {  // x -> A^-1 (M (A x + b) + t - b)
+        const PMat M = pm_from_cols(a.col, n, p), C = pm_mul(Ai, pm_mul(M, A, p), p);
+        PVec z = pm_apply(M, b, p);
+        const PVec t = pv_digits(a.t, n, p);
+        for (int r = 0; r < n; ++r) z[r] = ((z[r] + t[r] - b[r]) % p + p) % p;
+        a.t = pv_index(pm_apply(Ai, z, p), p);
+        for (int c = 0; c < n; ++c) {
+            PVec e(n);
+            for (int r = 0; r < n; ++r) e[r] = C.at(r, c);
+            a.col[c] = pv_index(e, p);
+        }
+    }
 }
 
 // Maiorana-McFarland: f(x, y) = <x, pi(y)> + g(y), x = the low n/2 coordinates,

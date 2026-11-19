@@ -1,7 +1,8 @@
 // Self-test of the solver for F_p^n -> F_p: primitives against their
 // definitions, the solver against a brute force over all flats (tiny cases),
 // against closed-form answers (quadratic forms, Maiorana-McFarland), against
-// the binary solver for p = 2, and against itself in its search modes.
+// the binary solver for p = 2, against itself in its search modes, and with
+// symmetries against the search without them.
 #pragma once
 #include "pgen.hpp"
 #include <map>
@@ -349,5 +350,205 @@ static int pary_selftest(int& checks) {
         expect(r.k == 3 && r.value == 2, "constant function", 3, 3, 0);
     }
     lap("p-ary: linear structures");
+
+    // 7. symmetry: linear algebra
+    for (int p : {3, 5, 7}) {
+        PField F;
+        F.init(p);
+        for (int it = 0; it < 30; ++it) {
+            const int n = 2 + (int)(rng() % 7);
+            // a random matrix, its inverse, minimal polynomials, kernels
+            PMat M(n), Mi;
+            for (int& v : M.a) v = (int)(rng() % p);
+            const bool invertible = pm_inv(M, F, Mi);
+            if (invertible) {
+                const PMat I = pm_mul(M, Mi, p), J = pm_id(n);
+                expect(I.a == J.a, "matrix inverse", p, n, it);
+            }
+            PVec x(n);
+            for (int& v : x) v = (int)(rng() % p);
+            x[0] = 1;
+            const PPoly q = pp_minpoly(M, x, F);
+            const PMat Q = pp_eval(q, M, p);
+            bool zero = true;
+            for (int v : pm_apply(Q, x, p)) zero &= v == 0;
+            expect(zero && q.back() == 1, "minimal polynomial of a vector", p, n, it);
+            PPoly prod(1, 1);
+            for (const auto& fc : pp_factor(q, p))
+                for (int e = 0; e < fc.second; ++e) {
+                    PPoly t(prod.size() + fc.first.size() - 1, 0);
+                    for (size_t a = 0; a < prod.size(); ++a)
+                        for (size_t b = 0; b < fc.first.size(); ++b) t[a + b] = (t[a + b] + prod[a] * fc.first[b]) % p;
+                    prod = t;
+                }
+            expect(prod == q, "factorisation of a polynomial", p, n, it);
+            bool kerok = true;
+            for (const PVec& v : pm_kernel(Q, F))
+                for (int w : pm_apply(Q, v, p)) kerok &= w == 0;
+            expect(kerok, "kernel", p, n, it);
+            // the rotation of the coordinates (and their reversal): invariant subspaces
+            std::vector<PMat> gens(1 + it % 2, PMat(n));
+            for (int j = 0; j < n; ++j) gens[0].at((j + 1) % n, j) = 1;
+            if (gens.size() > 1)
+                for (int j = 0; j < n; ++j) gens[1].at(n - 1 - j, j) = 1;
+            const int want = 1 + (int)(rng() % n);
+            const PSub W = pa_invariant_subspace(F, n, gens, want, rng);
+            bool inv = W.dim() <= want;
+            for (const PVec& v : W.b)
+                for (const PMat& g : gens) {
+                    PSub T = W;
+                    inv &= !T.add(pm_apply(g, v, p), F);
+                }
+            expect(inv, "invariant subspace", p, n, it);
+            // the all-ones vector spans one, so dimension 1 is always there; n is the whole space
+            if (want == 1) expect(W.dim() == 1, "invariant line of the rotation", p, n, it);
+        }
+    }
+    lap("p-ary: symmetry, linear algebra");
+
+    // 8. symmetry: the solver with maps against the solver without
+    auto same_with_maps = [&](const PT& f, int p, int n, const std::vector<PMap>& maps, int want_used, const char* what,
+                              u64 seed) {
+        const PResult plain = pa_solve(f, p, n, par);
+        for (int mode = 0; mode < 4; ++mode) {
+            const PResult r = pa_solve(f, p, n, mode % 2 ? def : par, -1, mode, 3, &maps);
+            expect(r.k == plain.k, what, p, n, 10 * seed + mode);
+            if (r.sym_looked && want_used >= 0) expect(r.sym_used == want_used, "number of maps accepted", p, n, seed);
+        }
+        if (plain.k < n) {  // nothing above the maximum, with symmetry
+            const PResult r = pa_solve(f, p, n, par, plain.k + 1, 0, 3, &maps);
+            expect(r.k <= plain.k, "target above the maximum, with symmetry", p, n, seed);
+        }
+        return plain.k;
+    };
+    {
+        // functions invariant under the rotation (and reversal) of the coordinates, with planted flats
+        struct RC { int p, n, k, brute; };
+        int idx = 0;
+        for (const RC& c : {RC{3, 4, 2, 1}, RC{3, 5, 2, 1}, RC{5, 3, 1, 1}, RC{5, 4, 2, 1}, RC{7, 3, 1, 1}, RC{3, 6, 3, 0},
+                            RC{3, 7, 3, 0}, RC{3, 8, 4, 0}, RC{5, 5, 2, 0}, RC{5, 6, 3, 0}, RC{7, 4, 2, 0}, RC{11, 3, 1, 0}}) {
+            PField F;
+            F.init(c.p);
+            const u32 N = (u32)F.pw[c.n];
+            for (int it = 0; it < (c.brute ? 6 : 3); ++it) {
+                ++idx;
+                const bool dihedral = it % 2;
+                auto rot = [&](u32 x) { return (u32)(x / c.p + (u64)(x % c.p) * (N / c.p)); };  // digit i -> digit i - 1
+                auto rev = [&](u32 x) {
+                    u32 y = 0;
+                    for (int i = 0; i < c.n; ++i, x /= c.p) y = y * c.p + x % c.p;
+                    return y;
+                };
+                auto orbit = [&](u32 x) {
+                    std::vector<u32> o;
+                    for (int i = 0; i < c.n; ++i, x = rot(x)) {
+                        o.push_back(x);
+                        if (dihedral) o.push_back(rev(x));
+                    }
+                    return o;
+                };
+                PT f(N);
+                for (u32 x = 0; x < N; ++x) {
+                    u32 mn = x;
+                    for (u32 y : orbit(x)) mn = std::min(mn, y);
+                    u64 h = (mn + 1) * 0x9E3779B97F4A7C15ULL + 1000003ULL * idx;
+                    h ^= h >> 29;
+                    f[x] = (uint8_t)((h >> 7) % (it % 3 == 2 ? 2 : c.p));
+                }
+                // one value on a random flat and on all its images
+                const PT mark = pa_plant(PT(N, 0), c.p, c.n, c.k, 1, 900 + idx);
+                const int cv = (int)(rng() % c.p);
+                for (u32 x = 0; x < N; ++x)
+                    if (mark[x])
+                        for (u32 y : orbit(x)) f[y] = (uint8_t)cv;
+                std::vector<PMap> maps(dihedral ? 3 : 2);
+                for (int j = 0; j < c.n; ++j) {
+                    maps[0].col.push_back((u32)F.pw[(j + c.n - 1) % c.n]);       // the rotation
+                    maps[1].col.push_back((u32)F.pw[(j + 1) % c.n] + (j == 0));  // not a symmetry (as a rule)
+                    if (dihedral) maps[2].col.push_back((u32)F.pw[c.n - 1 - j]);
+                }
+                const int k0 = same_with_maps(f, c.p, c.n, maps, -1, "rotation-invariant function", idx);
+                expect(k0 >= c.k, "planted flat (rotation-invariant)", c.p, c.n, idx);
+                if (c.brute) expect(k0 == pa_brute(f, c.p, c.n), "rotation-invariant function vs brute force", c.p, c.n, idx);
+            }
+        }
+    }
+    {
+        // trace functions with the maps of the field, also in random coordinates
+        struct TC { int p, n; u64 d, e, d2; };
+        int idx = 0;
+        for (const TC& c : {TC{3, 6, 2, 0, 0}, TC{3, 6, 4, 1, 0}, TC{3, 6, 14, 0, 0}, TC{3, 7, 14, 0, 0}, TC{3, 8, 14, 0, 0},
+                            TC{3, 8, 14, 1, 0}, TC{3, 8, 802, 0, 2}, TC{3, 9, 4, 0, 0}, TC{5, 4, 2, 0, 0}, TC{5, 4, 6, 1, 0},
+                            TC{5, 5, 6, 0, 0}, TC{5, 6, 26, 0, 0}, TC{7, 4, 8, 0, 0}, TC{7, 4, 2, 3, 0}, TC{11, 3, 2, 0, 0},
+                            TC{13, 2, 2, 0, 0}}) {
+            ++idx;
+            PT f;
+            pa_add_monomial(f, c.p, c.n, c.d, c.e);
+            if (c.d2) pa_add_monomial(f, c.p, c.n, c.d2, 0);
+            PGF K;
+            K.init(c.p, c.n);
+            std::vector<PMap> maps;
+            pa_field_maps(K, f, maps);
+            PField F;
+            F.init(c.p);
+            bool all = true;
+            for (const PMap& a : maps) {
+                PMat M;
+                std::vector<int> sg;
+                all &= pa_map_check(F, f.data(), c.n, a, M, sg);
+            }
+            expect(all, "field maps are symmetries", c.p, c.n, idx);
+            if (c.e == 0 && c.d2 == 0) expect(!maps.empty(), "a trace monomial has the Frobenius map", c.p, c.n, idx);
+            same_with_maps(f, c.p, c.n, maps, (int)maps.size(), "trace function with field maps", idx);
+            const PT g = pa_scramble(f, c.p, c.n, 50 + idx);
+            pa_scramble_maps(c.p, c.n, 50 + idx, maps);
+            same_with_maps(g, c.p, c.n, maps, (int)maps.size(), "trace function with field maps, scrambled", idx);
+        }
+    }
+    {
+        // maps that permute the constants
+        int looked = 0;
+        for (const QC& q : {QC{3, 5}, QC{5, 4}, QC{7, 3}}) {
+            PField F;
+            F.init(q.p);
+            // f(x) = x_0 + g(x_1, ...): the translation by e_0 adds 1
+            const PT g = pa_random(q.p, q.n - 1, 90 + q.n);
+            PT f(F.pw[q.n]);
+            for (size_t x = 0; x < f.size(); ++x) f[x] = (uint8_t)((x % q.p + g[x / q.p]) % q.p);
+            std::vector<PMap> maps(1);
+            for (int j = 0; j < q.n; ++j) maps[0].col.push_back((u32)F.pw[j]);
+            maps[0].t = 1;
+            same_with_maps(f, q.p, q.n, maps, 1, "translation that shifts the values", q.n);
+            const PResult r = pa_solve(f, q.p, q.n, def, -1, 0, 3, &maps);
+            looked += r.sym_looked;
+            if (r.sym_looked) expect(r.sym_classes == 1, "all constants in one class", q.p, q.n, 0);
+        }
+        struct HC { int p, n; u64 d; };
+        for (const HC& c : {HC{3, 5, 5}, HC{5, 4, 14}, HC{7, 3, 10}, HC{11, 3, 14}}) {
+            PField F;
+            F.init(c.p);
+            // Tr(x^d): the scalar 2 multiplies it by 2^d
+            PT f;
+            pa_add_monomial(f, c.p, c.n, c.d, 0);
+            std::vector<PMap> maps(1);
+            for (int j = 0; j < c.n; ++j) maps[0].col.push_back((u32)(2 * F.pw[j]));
+            same_with_maps(f, c.p, c.n, maps, 1, "scalar that multiplies the values", c.d);
+            const PResult r = pa_solve(f, c.p, c.n, def, -1, 0, 3, &maps);
+            int mu = 1;
+            for (u64 i = 0; i < c.d; ++i) mu = mu * 2 % c.p;
+            int cls = 0;  // {0} and the cosets of the subgroup generated by 2^d, as far as f takes the values
+            std::vector<char> seen(c.p, 0);
+            for (int v = 0; v < c.p; ++v) {
+                if (seen[v]) continue;
+                bool taken = false;
+                for (int x = v; !seen[x]; x = x * mu % c.p) seen[x] = 1, taken |= r.ub[x] >= 0;
+                cls += taken;
+            }
+            looked += r.sym_looked;
+            if (r.sym_looked) expect(r.sym_classes == cls, "classes of constants under a scalar", c.p, c.n, cls);
+        }
+        expect(looked >= 3, "the maps were looked at", 0, 0, looked);
+    }
+    lap("p-ary: symmetry, solver");
     return fails;
 }
