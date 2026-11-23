@@ -1096,6 +1096,15 @@ struct PResult {
     int sym_classes = 0;      // classes of constants with points under their sigmas (one constant per class is searched)
     double sym_order = 0;     // size of the largest group used to skip first directions (as far as it was listed)
     std::string sym_note;
+    // weak normality (weak.hpp): k is then the largest dimension of a flat on which f is affine,
+    // f(a + sum t_i basis[i]) = value + sum t_i slope[i]
+    bool weak = false;
+    std::vector<int> slope;
+    int const_k = -1;         // dimension of the largest flat found on which f is constant
+    int walsh_cap = -1;       // largest k with p^k <= max |Walsh coefficient of f|
+    int graph_dim = -1;       // dimension of the flat that was looked for in the graph of f; -1: no search there
+    bool graph_found = false;
+    bool sym_graph = false;   // the symmetry fields describe the search in the graph
     Stats st;
     double seconds = 0;
 };
@@ -1153,6 +1162,9 @@ static PResult pa_solve(const PT& f0, int p, int n, const Options& opt, int targ
         for (int c = 0; c < p; ++c) fprintf(stderr, " %d", R.ub[c]);
         fprintf(stderr, "\n");
     }
+    int c_one = -1;  // Options::one_const: the only constant that is looked at
+    if (opt.one_const)
+        for (c_one = 0; c_one < p - 1 && sp.size[c_one] == 0;) ++c_one;
     // 3. greedy lower bound
     PFlat best;
     best.c = f[0];
@@ -1163,7 +1175,7 @@ static PResult pa_solve(const PT& f0, int p, int n, const Options& opt, int targ
         std::vector<u64> L, dirs;
         const int rounds = N > 2000000 ? 1 : std::max(1, restarts);
         for (int c = 0; c < p && bk < top; ++c) {
-            if (sp.ub[c] <= bk) continue;
+            if (sp.ub[c] <= bk || (c_one >= 0 && c != c_one)) continue;
             L.clear();
             u64 px = 0;
             for (size_t x = 0; x < N; ++x, px = F.next(px))
@@ -1222,7 +1234,7 @@ static PResult pa_solve(const PT& f0, int p, int n, const Options& opt, int targ
     auto search = [&](int t) {
         if (!sym_ready) prepare_sym();
         for (int c = 0; c < p; ++c) {
-            if (sp.ub[c] < t || crep[c] != c) continue;
+            if (sp.ub[c] < t || crep[c] != c || (c_one >= 0 && c != c_one)) continue;
             ++R.searches;
             const double ts = now_sec();
             PFlat fl;

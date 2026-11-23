@@ -1,6 +1,7 @@
 // normality: largest k such that a Boolean function is k-normal
 // (constant on some k-dimensional affine subspace of F_2^n), and the same
-// for functions F_p^n -> F_p, p an odd prime (option --p).
+// for functions F_p^n -> F_p, p an odd prime (option --p).  With --weak:
+// weakly k-normal, i.e. affine on such a subspace.
 //
 // Build:  g++ -O3 -march=native -std=c++17 -pthread -o normality main.cpp
 // (see README.md for the build with the external equivalence library)
@@ -38,6 +39,8 @@ static void usage() {
          "  --scramble SEED  then apply a random affine change of variables\n"
          "  --all-linear     solve f + <u, x> for every u and print the distribution of k\n"
          "  --target K       only decide whether f is K-normal (much cheaper than the maximum)\n"
+         "  --weak           weak normality: the largest k such that f is affine, not only constant, on a\n"
+         "                   k-dimensional flat (with --target K: is f weakly K-normal?); n at most 29\n"
          "symmetry (automorphisms A of f, f(Ax) = f(x) or f(x) + 1; every map is verified before use).\n"
          "Used by default: the symmetries known from the construction of a built-in family, and, once an\n"
          "exhaustive search has taken a while, the automorphism group computed in the background by the\n"
@@ -56,7 +59,7 @@ static void usage() {
          "    --mm N [SEED]      Maiorana-McFarland bent function\n"
          "    --quad N [T]       quadratic form x0 x1 + x2 x3 + ... (T = 1: the elliptic one, x0^2 - c x1^2 + ...)\n"
          "    --random N [SEED]  uniformly random function\n"
-         "                   and of the options above: -f, -t, -v, --json, --scramble, --target, and\n"
+         "                   and of the options above: -f, -t, -v, --json, --scramble, --target, --weak, and\n"
          "    --no-aut-known     do not use the maps x -> a x^(P^i) of the field that are symmetries of a\n"
          "                       --power function (they are used by default; there is no library for odd P)\n"
          "    --aut-file FILE    candidate maps A with f(A x) = f(x), or = s(f(x)) for a permutation s of the\n"
@@ -76,17 +79,18 @@ static void print_search_stats(const Result& r) {
 
 static void print_symmetry(const Result& r) {
     if (!r.sym_loaded) return;
+    const char* head = r.sym_graph ? "symmetry of the graph function f(x) + y" : "symmetry";
     if (r.sym_gens == 0 && !r.sym_flip) {
-        printf("symmetry: none usable (%d maps offered)%s%s\n", r.sym_offered, r.sym_note.empty() ? "" : "; ",
+        printf("%s: none usable (%d maps offered)%s%s\n", head, r.sym_offered, r.sym_note.empty() ? "" : "; ",
                r.sym_note.c_str());
         return;
     }
-    printf("symmetry: ");
-    if (r.sym_gens == 0) printf("no automorphism with f(Ax) = f(x)");
+    printf("%s: ", head);
+    if (r.sym_gens == 0) printf("no automorphism that keeps the values");
     else if (r.sym_order >= 1) printf("group of order %.0f", r.sym_order);
     else printf("group of order above %zu", SYM_ROOT_CAP);
     if (r.sym_gens) printf(" (%d generators)", r.sym_gens);
-    if (r.sym_flip) printf(", and f is equivalent to f + 1, so one constant was searched");
+    if (r.sym_flip && !r.sym_graph) printf(", and f is equivalent to f + 1, so one constant was searched");
     printf("; %llu candidate directions skipped; %.3f s to prepare%s%s\n", (unsigned long long)r.st.sym_skipped,
            r.sym_seconds, r.sym_note.empty() ? "" : "; ", r.sym_note.c_str());
 }
@@ -109,6 +113,51 @@ static void report(const Result& r) {
     printf("time: %.3f s\n", r.seconds);
 }
 
+// "f = 1 on a + span(basis)", or the affine function on the flat if it is not constant there.
+static std::string weak_formula(int k, int value, const std::vector<int>& slope) {
+    bool flat = true;
+    for (int s : slope) flat &= s == 0;
+    if (flat) return "f = " + std::to_string(value) + " on a + span(basis)";
+    const std::string ks = std::to_string(k);
+    std::string o = k == 1 ? "f(a + t1 b1)" : k == 2 ? "f(a + t1 b1 + t2 b2)" : "f(a + t1 b1 + ... + t" + ks + " b" + ks + ")";
+    return o + " = " + std::to_string(value) + " + t" + ks + " for the basis b1 .. b" + ks;
+}
+
+// The lines of a weak-normality report that do not depend on the characteristic.
+template <class R> static void weak_lines(const R& r, bool exact) {
+    if (exact)
+        printf("f is constant on a flat of dimension %d and on none larger, so k is %d or %d; the Walsh spectrum allows k <= %d\n",
+               r.const_k, r.const_k, r.const_k + 1, r.walsh_cap);
+    else printf("the Walsh spectrum allows k <= %d\n", r.walsh_cap);
+    if (r.graph_dim >= 0)
+        printf("graph of f: a flat of dimension %d was looked for and %s\n", r.graph_dim, r.graph_found ? "found" : "not found");
+    else printf("graph of f: no search was needed\n");
+    if (r.lin_dim) printf("invariant linear structures factored out: %d\n", r.lin_dim);
+}
+
+static void report_weak(const Result& r, bool exact) {
+    if (exact) printf("n = %d\nlargest k such that f is weakly k-normal (affine on a k-dimensional flat): %d\n", r.n, r.k);
+    printf("witness: %s, a = 0x%x, basis = {", weak_formula(r.k, r.value, r.slope).c_str(), r.a);
+    for (size_t i = 0; i < r.basis.size(); ++i) printf("%s0x%x", i ? ", " : "", r.basis[i]);
+    printf("}\n");
+    weak_lines(r, exact);
+    if (r.searches == 0) printf("optimality: no exhaustive search needed\n");
+    else {
+        printf("optimality: ");
+        print_search_stats(r);
+    }
+    print_symmetry(r);
+    printf("time: %.3f s\n", r.seconds);
+}
+
+template <class R> static void weak_json(const R& r) {
+    if (!r.weak) return;
+    printf(", \"weak\": true, \"slopes\": [");
+    for (size_t i = 0; i < r.slope.size(); ++i) printf("%s%d", i ? ", " : "", r.slope[i]);
+    printf("], \"constant_k\": %d, \"walsh_bound\": %d, \"graph_dim\": %d, \"graph_found\": %s", r.const_k, r.walsh_cap,
+           r.graph_dim, r.graph_found ? "true" : "false");
+}
+
 // The result as one JSON object on stdout, for programs (normality.py reads it).
 static void print_json(const Result& r, int n, int target, const TT& F) {
     long long mw = max_walsh(F, n);
@@ -126,6 +175,7 @@ static void print_json(const Result& r, int n, int target, const TT& F) {
     for (size_t i = 0; i < r.basis.size(); ++i) printf("%s%u", i ? ", " : "", r.basis[i]);
     printf("], \"upper_bounds\": [%d, %d], \"greedy\": %d, \"linear_structures\": %d", r.ub[0], r.ub[1], r.greedy_k,
            r.lin_dim);
+    weak_json(r);
     if (target >= 0) printf(", \"target\": %d, \"target_normal\": %s", target, r.k >= target ? "true" : "false");
     printf(", \"max_walsh\": %lld, \"bent\": %s", mw, bent ? "true" : "false");
     printf(", \"searches\": %d, \"dense_nodes\": %llu, \"sparse_nodes\": %llu, \"candidates\": %llu", r.searches,
@@ -175,6 +225,28 @@ static void pa_report(const PResult& r) {
     printf("time: %.3f s\n", r.seconds);
 }
 
+static void pa_report_weak(const PResult& r, bool exact) {
+    if (exact)
+        printf("p = %d, n = %d\nlargest k such that f is weakly k-normal (affine on a k-dimensional flat): %d\n", r.p, r.n, r.k);
+    printf("witness: %s, points given as x_0 + x_1 p + ... and by their coordinates x_0 .. x_%d\n",
+           weak_formula(r.k, r.value, r.slope).c_str(), r.n - 1);
+    printf("  a     = %-10u (%s)\n", r.a, pa_vec(r.a, r.p, r.n).c_str());
+    for (size_t i = 0; i < r.basis.size(); ++i)
+        printf("  %s %-10u (%s)\n", i ? "       " : "basis =", r.basis[i], pa_vec(r.basis[i], r.p, r.n).c_str());
+    weak_lines(r, exact);
+    if (r.searches == 0) printf("optimality: no exhaustive search needed\n");
+    else
+        printf("optimality: %d exhaustive searches (%llu dense nodes, %llu sparse nodes, %llu candidates)\n", r.searches,
+               (unsigned long long)r.st.dense_nodes, (unsigned long long)r.st.sparse_nodes, (unsigned long long)r.st.cands);
+    if (r.sym_looked) {
+        printf("%s: %d of %d maps are symmetries", r.sym_graph ? "symmetry of the graph function f(x) - y" : "symmetry",
+               r.sym_used, r.sym_offered);
+        if (r.sym_used) printf("; %llu first directions skipped", (unsigned long long)r.st.sym_skipped);
+        printf("%s%s\n", r.sym_note.empty() ? "" : "; ", r.sym_note.c_str());
+    }
+    printf("time: %.3f s\n", r.seconds);
+}
+
 static void pa_print_json(const PResult& r, int target) {
     printf("{\"p\": %d, \"n\": %d, \"k\": %d, \"exact\": %s, \"value\": %d, \"offset\": %u, \"basis\": [", r.p, r.n, r.k,
            target < 0 ? "true" : "false", r.value, r.a);
@@ -182,6 +254,7 @@ static void pa_print_json(const PResult& r, int target) {
     printf("], \"upper_bounds\": [");
     for (int c = 0; c < r.p; ++c) printf("%s%d", c ? ", " : "", r.ub[c]);
     printf("], \"greedy\": %d, \"linear_structures\": %d", r.greedy_k, r.lin_dim);
+    weak_json(r);
     if (target >= 0) printf(", \"target\": %d, \"target_normal\": %s", target, r.k >= target ? "true" : "false");
     printf(", \"max_walsh\": %.9g, \"bent\": %s", r.max_walsh, r.bent ? "true" : "false");
     printf(", \"searches\": %d, \"dense_nodes\": %llu, \"sparse_nodes\": %llu, \"candidates\": %llu", r.searches,
@@ -200,7 +273,7 @@ static int pary_main(int argc, char** argv, int p) {
     if (!F.init(p)) { fprintf(stderr, "--p needs a prime between 2 and 61\n"); return 2; }
     Options opt;
     opt.threads = std::max(1u, std::thread::hardware_concurrency());
-    bool json = false, known = true, known_asked = false, field = false;
+    bool json = false, known = true, known_asked = false, field = false, weak = false;
     int target = -1, mode = 0, n = -1;
     u64 scr = 0;
     std::string table, aut_file;
@@ -213,6 +286,7 @@ static int pary_main(int argc, char** argv, int p) {
         if (a == "--p" && has(i + 1)) ++i;
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else if (a == "--json") json = true;
+        else if (a == "--weak") weak = true;
         else if (a == "-v") opt.verbose = true;
         else if (a == "--target" && has(i + 1)) target = (int)num(++i);
         else if (a == "--scramble" && has(i + 1)) scr = num(++i);
@@ -258,6 +332,10 @@ static int pary_main(int argc, char** argv, int p) {
         if (n < 1) { fprintf(stderr, "bad table: need exactly %d^n values between 0 and %d\n", p, p - 1); return 2; }
     }
     if (!fits(n)) { fprintf(stderr, "too large: at most 60 million points\n"); return 2; }
+    if (weak && !fits(n + 1)) {
+        fprintf(stderr, "too large for --weak: it works with %d variables, at most 60 million points\n", n + 1);
+        return 2;
+    }
     std::vector<PMap> maps;
     if (known && field) {
         PGF K;
@@ -280,22 +358,27 @@ static int pary_main(int argc, char** argv, int p) {
             maps.push_back(pm);
         }
     }
-    PResult r = pa_solve(f, p, n, opt, target, mode, 3, maps.empty() ? nullptr : &maps);
+    const std::vector<PMap>* mp = maps.empty() ? nullptr : &maps;
+    PResult r = weak ? pa_solve_weak(f, p, n, opt, target, mode, 3, mp) : pa_solve(f, p, n, opt, target, mode, 3, mp);
     if (json) {
         pa_print_json(r, target);
         return 0;
     }
+    const char* wk = weak ? "weakly " : "";
     if (target >= 0) {
-        printf("p = %d, n = %d\nf is %d-normal: %s\n", p, n, target, r.k >= target ? "YES" : "NO");
+        printf("p = %d, n = %d\nf is %s%d-normal: %s\n", p, n, wk, target, r.k >= target ? "YES" : "NO");
         if (r.k < target) {
             printf("(best flat found so far has dimension %d; the maximum was not determined)\n", r.k);
             printf("time: %.3f s\n", r.seconds);
         }
     }
-    if (target < 0 || r.k >= target) pa_report(r);
+    if (target < 0 || r.k >= target) {
+        if (weak) pa_report_weak(r, target < 0);
+        else pa_report(r);
+    }
     if (target < 0 && r.bent) {
-        if (n % 2 == 0) printf("f is bent and %s (n/2 = %d)\n", 2 * r.k == n ? "normal" : "NOT normal", n / 2);
-        else printf("f is bent (in odd dimension a bent function is at most %d-normal)\n", (n - 1) / 2);
+        if (n % 2 == 0) printf("f is bent and %s%s (n/2 = %d)\n", wk, 2 * r.k == n ? "normal" : "NOT normal", n / 2);
+        else printf("f is bent (in odd dimension a bent function is at most %s%d-normal)\n", wk, (n - 1) / 2);
     }
     return 0;
 }
@@ -455,7 +538,7 @@ int main(int argc, char** argv) {
         opt.aut_budget = 60.0;
         opt.aut_delay = 0.3;
     }
-    bool hex = false, alllin = false, big = false, dual = false, json = false, aut_asked = false;
+    bool hex = false, alllin = false, big = false, dual = false, json = false, aut_asked = false, weak = false;
     int run_suite = 0;
     u32 plus = 0;
     int target = -1, hyp = 0;
@@ -485,6 +568,7 @@ int main(int argc, char** argv) {
         else if (a == "--hex") hex = true;
         else if (a == "--json") json = true;
         else if (a == "--all-linear") alllin = true;
+        else if (a == "--weak") weak = true;
         else if (a == "--dual") dual = true;
         else if (a == "--plus" && has(i + 1)) plus = (u32)num(++i);
         else if (a == "--hyp" && has(i + 1)) hyp = (int)num(++i);
@@ -585,13 +669,15 @@ int main(int argc, char** argv) {
     if (!sp.sym.empty()) opt.sym_cands = &sp.sym;
     if (opt.verbose) fprintf(stderr, "max |Walsh| = %lld\n", (long long)max_walsh(sp.F, n));
     if (alllin) { all_linear(sp.F, n, opt, target); return 0; }
-    Result r = solve(sp.F, n, opt, 3, target);
+    if (weak && n > 29) { fprintf(stderr, "--weak works with n + 1 variables, so n must be at most 29\n"); return 2; }
+    Result r = weak ? solve_weak(sp.F, n, opt, 3, target) : solve(sp.F, n, opt, 3, target);
     if (json) {
         print_json(r, n, target, sp.F);
         return r.k < 0 ? 1 : 0;
     }
+    const char* wk = weak ? "weakly " : "";
     if (target >= 0) {
-        printf("n = %d\nf is %d-normal: %s\n", n, target, r.k >= target ? "YES" : "NO");
+        printf("n = %d\nf is %s%d-normal: %s\n", n, wk, target, r.k >= target ? "YES" : "NO");
         if (r.k < target) {
             printf("(best flat found so far has dimension %d; the maximum was not determined)\n", r.k);
             print_search_stats(r);
@@ -599,10 +685,14 @@ int main(int argc, char** argv) {
             printf("time: %.3f s\n", r.seconds);
         }
     }
-    if (target < 0 || r.k >= target) report(r);
+    if (target < 0 || r.k >= target) {
+        if (weak) report_weak(r, target < 0);
+        else report(r);
+    }
     if (target < 0 && n % 2 == 0) {
         long long mw = max_walsh(sp.F, n);
-        if (mw * mw == (1ll << n)) printf("f is bent and %s (n/2 = %d)\n", 2 * r.k == n ? "normal" : "NOT normal", n / 2);
+        if (mw * mw == (1ll << n))
+            printf("f is bent and %s%s (n/2 = %d)\n", wk, 2 * r.k == n ? "normal" : "NOT normal", n / 2);
     }
     return r.k < 0 ? 1 : 0;
 }

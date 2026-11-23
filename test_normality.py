@@ -1,4 +1,5 @@
 """Tests for the Python interface:  python -m unittest test_normality -v"""
+import dataclasses
 import random
 import unittest
 
@@ -169,6 +170,72 @@ def brute_force_p(vals, p, n):
                 if len({vals[add_p(a, x, p, n)] for x in u}) == 1:
                     return k
     return -1
+
+
+class Weak(unittest.TestCase):
+    def test_against_brute_force(self):
+        # affine on a k-flat  <=>  f + <u, x> is constant on a k-flat for some u
+        rng = random.Random(3)
+        for n, reps in ((2, 6), (3, 10), (4, 8), (5, 1)):
+            for _ in range(reps):
+                bits = [rng.randrange(2) for _ in range(1 << n)]
+                want = max(brute_force([b ^ (bin(x & u).count("1") & 1) for x, b in enumerate(bits)], n)
+                           for u in range(1 << n))
+                r = normality.solve(bits, weak=True)
+                self.assertEqual(r.k, want, (n, bits))
+                self.assertTrue(r.weak and r.exact)
+                self.assertEqual(len(r.slopes), r.k)
+                self.assertTrue(normality.check(bits, r))
+                self.assertEqual([bits[x] for x in r.points()], [v for _, v in r.values()])
+                self.assertEqual(len(set(r.points())), 1 << r.k)
+                for k in range(n + 1):
+                    self.assertEqual(normality.is_weakly_k_normal(bits, k), k <= want, (n, bits, k))
+
+    def test_witness(self):
+        f = lambda x: (x & 1) & (x >> 1 & 1) ^ (x >> 2 & 1)     # x0 x1 + x2: affine on the plane x0 = 0
+        plain, r = normality.solve(f, n=3), normality.solve(f, n=3, weak=True)
+        self.assertEqual((plain.k, r.k), (1, 2))
+        self.assertEqual(r.slopes, (0, 1))
+        self.assertTrue(normality.check(f, r, n=3))
+        self.assertFalse(normality.check(f, dataclasses.replace(r, slopes=(0, 0)), n=3))
+        self.assertFalse(normality.check(f, dataclasses.replace(r, slopes=(1,)), n=3))
+        self.assertFalse(plain.weak)
+        self.assertEqual(plain.slopes, ())
+        self.assertEqual(normality.largest_k(f, n=3, weak=True), 2)
+
+    def test_bent(self):
+        r = normality.family("kasami", 10, plus=1)              # a bent function that is not normal ...
+        self.assertEqual((r.k, r.normal), (4, False))
+        r = normality.family("kasami", 10, plus=1, weak=True)   # ... and weakly normal
+        self.assertEqual((r.k, r.normal), (5, True))
+        self.assertEqual(sum(r.slopes), 1)
+        self.assertEqual(normality.family("kasami", 14, weak=True).k, 6)
+        self.assertEqual(normality.family("kasami", 14, weak=True, target=7).target_normal, False)
+        self.assertTrue(normality.is_weakly_normal(lambda x: (x & 1) & (x >> 1 & 1) ^ (x >> 2 & 1) & (x >> 3 & 1) ^ (x & 1), n=4))
+        rng = random.Random(4)
+        bits = [rng.randrange(2) for _ in range(1 << 12)]       # a random function on 12 variables is far from it
+        self.assertFalse(normality.is_weakly_normal(bits))
+        self.assertLessEqual(normality.largest_k(bits, weak=True) - normality.largest_k(bits), 1)
+
+    def test_odd_characteristic(self):
+        rng = random.Random(8)
+        for p, n, reps in ((3, 2, 6), (3, 3, 4), (5, 2, 4)):
+            for it in range(reps):
+                vals = [rng.randrange(p) if it % 2 else rng.randrange(2) for _ in range(p ** n)]
+                digits = lambda x: [x // p ** i % p for i in range(n)]
+                want = max(brute_force_p([(v + sum(a * b for a, b in zip(digits(u), digits(x)))) % p
+                                          for x, v in enumerate(vals)], p, n) for u in range(p ** n))
+                r = normality.solve(vals, p=p, weak=True)
+                self.assertEqual(r.k, want, (p, n, vals))
+                self.assertTrue(r.weak and normality.check(vals, r))
+                self.assertEqual(len(set(r.points())), p ** r.k)
+                for k in range(n + 1):
+                    self.assertEqual(normality.is_weakly_k_normal(vals, k, p=p), k <= want)
+        r = normality.solve("012120201", p=3, weak=True)        # x0 + x1 is affine everywhere
+        self.assertEqual((r.k, sum(r.slopes)), (2, 1))
+        self.assertEqual(normality.family("quad", 6, 1, p=3, weak=True).k, 2)
+        self.assertEqual(normality.family("power", 8, 14, 1, p=3, weak=True).k,
+                         normality.family("power", 8, 14, 1, p=3, weak=True, known_symmetry=False).k)
 
 
 class Defaults(unittest.TestCase):

@@ -45,6 +45,7 @@ struct Options {
     double sparse_weight = 8.0;  // cost of one pair op relative to one word op
     int threads = 1;
     bool verbose = false;
+    bool one_const = false;  // the constants are known to be equivalent (a map of the space permutes them): search one
     // Symmetry (used by the driver for the exhaustive searches):
     const std::vector<AffMap>* sym_cands = nullptr;  // candidate automorphisms; each is checked before use
     AutStart aut_source = nullptr;                   // computes the automorphism group, e.g. an external library

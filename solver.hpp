@@ -53,6 +53,15 @@ struct Result {
     bool sym_flip = false;    // some map takes f to f + 1, so both constants behave alike
     double sym_seconds = 0;   // time spent obtaining and preparing the group
     std::string sym_note;
+    // weak normality (weak.hpp): k is then the largest dimension of a flat on which f is affine,
+    // f(a + sum t_i basis[i]) = value + sum t_i slope[i]
+    bool weak = false;
+    std::vector<int> slope;
+    int const_k = -1;         // dimension of the largest flat found on which f is constant
+    int walsh_cap = -1;       // largest k with p^k <= max |Walsh coefficient of f|
+    int graph_dim = -1;       // dimension of the flat that was looked for in the graph of f; -1: no search there
+    bool graph_found = false;
+    bool sym_graph = false;   // the symmetry fields describe the search in the graph
     Stats st;
     double seconds = 0;
 };
@@ -430,7 +439,7 @@ static Result solve(const std::vector<u64>& F, int n, const Options& opt, int gr
     Flat best;  // in the reduced coordinates
     int B = -1;
     std::mt19937_64 rng(12345);
-    for (int c = 0; c < 2; ++c)
+    for (int c = 0; c < (opt.one_const ? 1 : 2); ++c)
         for (int it = 0; it <= greedy_restarts; ++it) {
             Path p;
             u32 leaf = greedy_extend(S[c], m, p, it ? &rng : nullptr);
@@ -771,7 +780,8 @@ static Result solve(const std::vector<u64>& F, int n, const Options& opt, int gr
             }
         }
         poll_library();
-        if (sym_flip.load() && nc == 2) nc = 1;  // an automorphism swaps f = 0 and f = 1: one constant decides both
+        // an automorphism swaps f = 0 and f = 1 (found, or known to the caller): one constant decides both
+        if ((sym_flip.load() || opt.one_const) && nc == 2) nc = 1;
         std::atomic<bool> stop(false);
         Flat fl[2];
         bool ok[2] = {false, false};

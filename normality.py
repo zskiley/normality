@@ -24,6 +24,12 @@ the coordinates x_0, x_1, ...
     normality.solve(lambda x: (x % 3) * (x // 3 % 3) % 3, n=2, p=3)
     normality.family("power", 10, 14, p=3)       # Tr(x^14) over GF(3^10)
 
+Weak normality asks for a flat on which f is affine, not only constant:
+
+    r = normality.solve(table, weak=True)        # the largest such k
+    r.slopes                                     # f(offset + sum t_i basis[i]) = value + sum t_i slopes[i]
+    normality.is_weakly_k_normal(table, 5)
+
 Symmetry is used by default: the symmetries known from the construction of a
 built-in family, and, for p = 2, the automorphism group computed in the
 background by the equivalence library once a search has taken a while.
@@ -46,7 +52,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator, Optional, Sequence, Tuple, Union
 
 __all__ = [
-    "solve", "largest_k", "is_k_normal", "is_normal", "family", "truth_table", "check",
+    "solve", "largest_k", "is_k_normal", "is_normal", "is_weakly_k_normal", "is_weakly_normal", "family",
+    "truth_table", "check",
     "build", "binary", "Result", "NormalityError", "FAMILIES", "PFAMILIES",
 ]
 
@@ -95,6 +102,13 @@ class Result:
     constant.  It is false only when a `target` was given: then the solver
     stopped as soon as the question "is f target-normal?" was settled, and k
     is just the dimension of the best flat it had found.
+
+    With weak=True the flat is one on which f is affine,
+
+        f(offset + t_1 basis[0] + ... + t_k basis[k-1]) = value + t_1 slopes[0] + ... + t_k slopes[k-1],
+
+    with at most the last slope different from 0, and k is the largest
+    dimension of such a flat (the remarks on `exact` apply in the same way).
     """
 
     n: int
@@ -103,7 +117,7 @@ class Result:
     offset: int
     basis: Tuple[int, ...]
     exact: bool
-    upper_bounds: Tuple[int, ...]   # spectral upper bounds for f = 0, f = 1, ...
+    upper_bounds: Tuple[int, ...]   # spectral upper bounds for f = 0, f = 1, ... (weak: the bound on k, repeated)
     bent: bool
     max_walsh: float
     searches: int                   # exhaustive searches that were needed
@@ -112,11 +126,13 @@ class Result:
     target: Optional[int] = None
     target_normal: Optional[bool] = None
     p: int = 2                      # the function goes from F_p^n to F_p
+    weak: bool = False              # the result of weak=True: f is affine on the flat
+    slopes: Tuple[int, ...] = ()    # then: the change of f along each basis vector
     raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def normal(self) -> Optional[bool]:
-        """Is f constant on a flat of dimension ceil(n/2)?  None if that was not decided."""
+        """Is f constant (with weak=True: affine) on a flat of dimension ceil(n/2)?  None if that was not decided."""
         half = (self.n + 1) // 2
         if self.exact or self.k >= half:
             return self.k >= half
@@ -126,24 +142,32 @@ class Result:
 
     def points(self) -> Iterator[int]:
         """The p^k points of the flat."""
-        x = self.offset
-        yield x
+        return (x for x, _ in self.values())
+
+    def values(self) -> Iterator[Tuple[int, int]]:
+        """The pairs (x, f(x)) for the p^k points x of the flat, in the order of points()."""
+        slopes = self.slopes if self.slopes else (0,) * self.k
+        x, v = self.offset, self.value
+        yield x, v
         if self.p == 2:
             for g in range(1, 1 << self.k):
-                x ^= self.basis[(g & -g).bit_length() - 1]   # Gray code: one basis vector per step
-                yield x
+                i = (g & -g).bit_length() - 1      # Gray code: one basis vector per step
+                x ^= self.basis[i]
+                v ^= slopes[i] & 1
+                yield x, v
             return
         count = [0] * self.k
         while True:
             for i in range(self.k):                # odometer: p times a vector is zero
                 x = _add(x, self.basis[i], self.p, self.n)
+                v = (v + slopes[i]) % self.p
                 count[i] += 1
                 if count[i] < self.p:
                     break
                 count[i] = 0
             else:
                 return
-            yield x
+            yield x, v
 
     def coordinates(self, x: int) -> Tuple[int, ...]:
         """The coordinates (x_0, ..., x_(n-1)) of a point or vector given as an integer."""
@@ -325,7 +349,7 @@ def _run(args: Sequence[str], verbose: bool) -> Result:
         n=d["n"], k=d["k"], value=d["value"], offset=d["offset"], basis=tuple(d["basis"]), exact=d["exact"],
         upper_bounds=tuple(d["upper_bounds"]), bent=d["bent"], max_walsh=d["max_walsh"], searches=d["searches"],
         seconds=d["seconds"], symmetry=d["symmetry"], target=d.get("target"), target_normal=d.get("target_normal"),
-        p=d.get("p", 2), raw=d)
+        p=d.get("p", 2), weak=bool(d.get("weak", False)), slopes=tuple(d.get("slopes", ())), raw=d)
 
 
 def _aut_warning(result: Result) -> Result:
@@ -348,7 +372,7 @@ def _options(target, threads, aut, aut_seconds, extra) -> list:
     return args + [str(a) for a in extra]
 
 
-def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional[int] = None,
+def solve(table: Table, n: Optional[int] = None, *, p: int = 2, weak: bool = False, target: Optional[int] = None,
           threads: Optional[int] = None, aut: Optional[bool] = None, aut_seconds: float = 60.0,
           maps: Optional[Iterable[Sequence[int]]] = None, verbose: bool = False,
           extra_args: Sequence[str] = ()) -> Result:
@@ -364,6 +388,11 @@ def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional
                  the coordinates x_0, x_1, ...  maps can be given (points as
                  such integers), and a map may also permute the values of f:
                  f(A x) = s(f(x)).  aut is for p = 2 only.
+    weak         weak normality: the largest k such that f is affine, not only
+                 constant, on a k-dimensional flat; Result.slopes then tells
+                 how f changes along the basis.  With target: is f weakly
+                 target-normal?  This works with one more variable (the graph
+                 of f) and costs about as much.
     target       only decide whether f is target-normal; see Result.exact.
     threads      worker threads (default: all cores).
     aut          the external equivalence library computes the automorphism
@@ -398,7 +427,7 @@ def solve(table: Table, n: Optional[int] = None, *, p: int = 2, target: Optional
             args = []
         with os.fdopen(fd, "w") as fh:
             fh.write(s)
-        args += ["-f", path] + (["-v"] if verbose else [])
+        args += ["-f", path] + (["-v"] if verbose else []) + (["--weak"] if weak else [])
         args += _options(target, threads, aut if p == 2 else None, aut_seconds, extra_args)
         if maps is not None:
             fd, mpath = tempfile.mkstemp(prefix="normality_", suffix=".maps")
@@ -435,9 +464,20 @@ def is_normal(table: Table, n: Optional[int] = None, **options) -> bool:
     return is_k_normal(table, (nvar + 1) // 2, n, **options)
 
 
+def is_weakly_k_normal(table: Table, k: int, n: Optional[int] = None, **options) -> bool:
+    """Is f affine on some k-dimensional flat?"""
+    return solve(table, n, target=k, weak=True, **options).k >= k
+
+
+def is_weakly_normal(table: Table, n: Optional[int] = None, **options) -> bool:
+    """Is f weakly normal, i.e. affine on a flat of dimension ceil(n/2)?"""
+    nvar = _nvar(table, n, _prime(options.get("p", 2)))
+    return is_weakly_k_normal(table, (nvar + 1) // 2, n, **options)
+
+
 def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = (), dual: bool = False,
            plus: int = 0, hyp: int = 0, scramble: int = 0, known_symmetry: Optional[bool] = None,
-           target: Optional[int] = None, threads: Optional[int] = None, aut: Optional[bool] = None,
+           weak: bool = False, target: Optional[int] = None, threads: Optional[int] = None, aut: Optional[bool] = None,
            aut_seconds: float = 60.0, verbose: bool = False, extra_args: Sequence[str] = ()) -> Result:
     """Solve one of the built-in families (see FAMILIES), e.g. family("kasami", 14).
 
@@ -445,10 +485,10 @@ def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = 
     function), plus=u (add the linear function <u, x>), hyp=r (add r hyperbolic
     pairs y1 y2 + ..., 2r more variables), scramble=seed (a random affine
     change of variables).  The symmetries known from the construction are used
-    unless known_symmetry=False; aut is as in solve().
+    unless known_symmetry=False; weak, target and aut are as in solve().
 
-    With an odd prime p the families are those in PFAMILIES and the only
-    modifier is scramble; known_symmetry applies to "power";
+    With an odd prime p the families are those in PFAMILIES and of the
+    modifiers only scramble is there; known_symmetry applies to "power";
     family("power", N, D, E, p=p, more=[(D2, E2)]) is
     Tr(g^E x^D + g^E2 x^D2) over GF(p^N).
     """
@@ -465,6 +505,8 @@ def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = 
             args += ["--scramble", str(int(scramble))]
         if known_symmetry is not None:
             args.append("--aut-known" if known_symmetry else "--no-aut-known")
+        if weak:
+            args.append("--weak")
         if verbose:
             args.append("-v")
         return _run(args + _options(target, threads, None, 0, extra_args), verbose)
@@ -481,13 +523,18 @@ def family(name: str, *params: int, p: int = 2, more: Iterable[Sequence[int]] = 
         args += ["--scramble", str(int(scramble))]
     if known_symmetry is not None:
         args.append("--aut-known" if known_symmetry else "--no-aut-known")
+    if weak:
+        args.append("--weak")
     if verbose:
         args.append("-v")
     return _aut_warning(_run(args + _options(target, threads, aut, aut_seconds, extra_args), verbose))
 
 
 def check(table: Table, result: Result, n: Optional[int] = None) -> bool:
-    """Verify in Python that f == result.value on the flat and that the flat has dimension result.k."""
+    """Verify in Python that f == result.value on the flat (for a weak result: that f is the
+    affine function given by result.slopes there) and that the flat has dimension result.k."""
+    if result.slopes and len(result.slopes) != result.k:
+        return False
     if result.p != 2:
         p = result.p
         vals = _values(table, n, p)
@@ -503,7 +550,7 @@ def check(table: Table, result: Result, n: Optional[int] = None) -> bool:
             if not any(row):
                 return False
             rows.append(row)
-        return all(vals[x] == result.value for x in result.points())
+        return all(vals[x] == v for x, v in result.values())
     s = _bits(table, n)
     if len(s) != 1 << result.n or len(result.basis) != result.k:
         return False
@@ -514,8 +561,7 @@ def check(table: Table, result: Result, n: Optional[int] = None) -> bool:
         if v == 0:
             return False
         rows.append(v)
-    want = str(result.value)
-    return all(s[x] == want for x in result.points())
+    return all(s[x] == "01"[v & 1] for x, v in result.values())
 
 
 if __name__ == "__main__":

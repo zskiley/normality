@@ -6,7 +6,8 @@ The answer is exact and comes with a flat that attains it. Practical for `n`
 up to about 20.
 
 Functions `f : F_p^n -> F_p` for an odd prime `p` (up to 61) are handled too,
-see [Odd characteristic](#odd-characteristic).
+see [Odd characteristic](#odd-characteristic). The solver can also find the
+largest flat on which `f` is affine, see [Weak normality](#weak-normality).
 
 ## Install
 
@@ -35,8 +36,8 @@ normality.is_normal(table)        # k = ceil(n/2)
 normality.family("kasami", 14)    # a built-in family; normality.FAMILIES lists them
 ```
 
-`solve` also takes `target=k`, `threads=`, `verbose=True`, and the symmetry
-options `aut=` and `maps=[...]` described below.
+`solve` also takes `target=k`, `weak=True`, `threads=`, `verbose=True`, and
+the symmetry options `aut=` and `maps=[...]` described below.
 
 ## Command line
 
@@ -56,6 +57,32 @@ To compile by hand without Python:
 `g++ -O3 -march=native -std=c++17 -pthread -o normality main.cpp`
 (with MinGW-w64 on Windows add `-static -Wa,-muse-unaligned-vector-move`).
 That build has everything except the equivalence library.
+
+## Weak normality
+
+`f` is weakly k-normal if it is **affine** on some k-dimensional flat, not
+necessarily constant. `weak=True` / `--weak` finds the largest such `k`:
+
+```python
+r = normality.solve(table, weak=True)
+r.k, r.offset, r.basis, r.value, r.slopes
+# f(offset + t_1 basis[0] + ... + t_k basis[k-1]) = value + t_1 slopes[0] + ... + t_k slopes[k-1]
+normality.is_weakly_k_normal(table, 3)
+normality.is_weakly_normal(table)                    # k = ceil(n/2)
+normality.family("kasami", 10, plus=1, weak=True)    # a bent function that is weakly normal but not normal
+```
+
+```bash
+./normality --weak --kasami 10 --plus 1
+```
+
+At most the last slope is not 0, so `f` is constant on the flat spanned by
+the other basis vectors. Odd `p` works the same way.
+
+The cost is about that of one more variable: `f` is affine on a flat exactly
+when `f(x) + y` is constant on a flat of the same dimension. The answer is
+the normality of `f` or one more, so `f` is solved first and one question
+about `f(x) + y` decides the rest (`weak.hpp`).
 
 ## Symmetry
 
@@ -125,4 +152,4 @@ python -m unittest test_normality
 An upper bound from the Walsh spectrum, a greedy lower bound, then an
 exhaustive search over direction spaces using bitset quotients. The details
 are in the comments at the top of `solver.hpp`, `search.hpp` and `group.hpp`,
-and of `pary.hpp` for odd `p`.
+of `pary.hpp` for odd `p`, and of `weak.hpp` for weak normality.

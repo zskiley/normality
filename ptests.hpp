@@ -2,7 +2,8 @@
 // definitions, the solver against a brute force over all flats (tiny cases),
 // against closed-form answers (quadratic forms, Maiorana-McFarland), against
 // the binary solver for p = 2, against itself in its search modes, and with
-// symmetries against the search without them.
+// symmetries against the search without them.  Weak normality is compared
+// with the normality of f + <u, x> over all u.
 #pragma once
 #include "pgen.hpp"
 #include <map>
@@ -550,5 +551,136 @@ static int pary_selftest(int& checks) {
         expect(looked >= 3, "the maps were looked at", 0, 0, looked);
     }
     lap("p-ary: symmetry, solver");
+
+    // 9. weak normality (weak.hpp): the largest k such that f is affine on a k-flat is the
+    //    maximum over u of the normality of f + <u, x>
+    {
+        auto witness_ok = [&](const PT& f, int p, int n, const PResult& r) {
+            if (!r.weak || (int)r.basis.size() != r.k || r.slope.size() != r.basis.size()) return false;
+            u64 total = 1;
+            for (int i = 0; i < r.k; ++i) total *= p;
+            std::set<u32> seen;
+            for (u64 t = 0; t < total; ++t) {
+                u32 x = r.a;
+                int v = r.value;
+                u64 tt = t;
+                for (int i = 0; i < r.k; ++i, tt /= p)
+                    for (int j = 0; j < (int)(tt % p); ++j) x = pa_addidx(p, n, x, r.basis[i]), v = (v + r.slope[i]) % p;
+                if (f[x] != v) return false;
+                seen.insert(x);
+            }
+            return seen.size() == total;  // p^k different points: the basis is independent
+        };
+        auto plus_linear = [&](const PT& f, int p, int n, u32 u) {
+            PT g(f.size());
+            for (u32 x = 0; x < g.size(); ++x) {
+                int s = f[x];
+                u32 a = x, b = u;
+                for (int i = 0; i < n; ++i, a /= p, b /= p) s += (int)(a % p) * (int)(b % p);
+                g[x] = (uint8_t)(s % p);
+            }
+            return g;
+        };
+        struct WC { int p, n, reps, brute; };
+        int runs = 0, hits = 0;
+        for (const WC& c : {WC{2, 4, 6, 1}, WC{2, 5, 6, 1}, WC{3, 1, 3, 1}, WC{3, 2, 8, 1}, WC{3, 3, 8, 1}, WC{5, 2, 8, 1},
+                            WC{7, 2, 6, 1}, WC{11, 2, 4, 1}, WC{2, 7, 3, 0}, WC{3, 4, 6, 0}, WC{3, 5, 3, 0}, WC{5, 3, 5, 0},
+                            WC{7, 3, 3, 0}}) {
+            for (int it = 0; it < c.reps; ++it) {
+                PT f = pa_random(c.p, c.n, 3000 * c.p + 10 * c.n + it);
+                if (it % 4 == 1)
+                    for (auto& v : f) v = v % 2;
+                if (it % 4 == 2)
+                    for (auto& v : f) v = v < c.p / 2 + 1 ? 0 : v;
+                int planted = 0;
+                if (it % 4 == 3 && c.n >= 2) {  // it + x_0 where the last coordinates are 0, in other coordinates
+                    planted = 1 + (it / 4) % (c.n - 1);
+                    u32 Nk = 1;
+                    for (int i = 0; i < planted; ++i) Nk *= c.p;
+                    for (u32 x = 0; x < Nk; ++x) f[x] = (uint8_t)((it + x) % c.p);
+                    f = pa_scramble(f, c.p, c.n, 40 + it);
+                }
+                int want = -1;
+                for (u32 u = 0; u < f.size(); ++u) {
+                    const PT g = plus_linear(f, c.p, c.n, u);
+                    want = std::max(want, c.brute ? pa_brute(g, c.p, c.n) : pa_solve(g, c.p, c.n, def).k);
+                }
+                expect(want >= planted, "weak normality: the planted flat", c.p, c.n, it);
+                for (int mode = 0; mode < 4; ++mode) {
+                    const PResult r = pa_solve_weak(f, c.p, c.n, mode == 1 ? par : def, -1, mode);
+                    expect(r.k == want, "weak normality against all linear functions", c.p, c.n, 10 * it + mode);
+                    expect(witness_ok(f, c.p, c.n, r), "weak normality: witness", c.p, c.n, 10 * it + mode);
+                    runs += r.graph_dim >= 0;
+                    hits += r.graph_found;
+                }
+                for (int t = 0; t <= c.n; ++t) {
+                    const PResult r = pa_solve_weak(f, c.p, c.n, def, t);
+                    expect((r.k >= t) == (t <= want) && witness_ok(f, c.p, c.n, r), "weak normality: target", c.p, c.n,
+                           100 * it + t);
+                }
+            }
+        }
+        expect(hits > 5 && runs - hits > 5, "weak normality: both outcomes of the search in the graph", 0, 0, hits);
+        for (int n : {6, 7, 8, 9})
+            for (int it = 0; it < 3; ++it) {
+                const TT B = it == 2 ? random_degree(n, 3, 40 + n) : random_function(n, 70 + n + it, 1, 2 + 2 * it);
+                PT f((size_t)1 << n);
+                for (u32 x = 0; x < f.size(); ++x) f[x] = getbit(B.data(), x);
+                const PResult r = pa_solve_weak(f, 2, n, def);
+                expect(r.k == solve_weak(B, n, def).k && witness_ok(f, 2, n, r), "weak normality: p = 2 vs the binary solver", 2,
+                       n, it);
+            }
+        // a non-degenerate quadratic form is affine only on flats whose directions are singular
+        struct WQ { int p, n; };
+        for (const WQ& q : {WQ{3, 4}, WQ{3, 5}, WQ{3, 6}, WQ{3, 7}, WQ{5, 4}, WQ{5, 5}, WQ{7, 4}})
+            for (int type = 0; type < (q.n % 2 ? 1 : 2); ++type) {
+                const PT f = pa_scramble(pa_quadratic(q.p, q.n, type), q.p, q.n, 9 * q.n + type);
+                const PResult r = pa_solve_weak(f, q.p, q.n, par);
+                expect(r.k == (q.n % 2 ? (q.n - 1) / 2 : q.n / 2 - type) && witness_ok(f, q.p, q.n, r),
+                       "weak normality of a quadratic form", q.p, q.n, type);
+            }
+        for (const WQ& q : {WQ{3, 4}, WQ{3, 6}, WQ{5, 4}}) {
+            const PT f = pa_scramble(pa_mm(q.p, q.n, q.n), q.p, q.n, 31 + q.n);
+            const PResult r = pa_solve_weak(f, q.p, q.n, def);
+            expect(r.k == q.n / 2 && witness_ok(f, q.p, q.n, r), "weak normality of a Maiorana-McFarland function", q.p, q.n, 0);
+        }
+        // trace functions with the maps of the field: these are symmetries of the graph function too
+        struct FC { int p, n; u64 d, e; };
+        int fi = 0, in_graph = 0;
+        for (const FC& c : {FC{3, 6, 14, 0}, FC{3, 6, 20, 1}, FC{3, 7, 22, 0}, FC{3, 8, 14, 1}, FC{5, 4, 8, 0}, FC{5, 5, 12, 0},
+                            FC{5, 4, 26, 1}, FC{7, 3, 10, 0}}) {
+            ++fi;
+            PField F;
+            F.init(c.p);
+            PT f;
+            PGF K;
+            if (!K.init(c.p, c.n) || !pa_add_monomial(f, c.p, c.n, c.d, c.e)) {
+                expect(false, "weak normality: no field", c.p, c.n, fi);
+                continue;
+            }
+            std::vector<PMap> maps;
+            pa_field_maps(K, f, maps);
+            if (fi % 2 == 0) {
+                f = pa_scramble(f, c.p, c.n, 5 + fi);
+                pa_scramble_maps(c.p, c.n, 5 + fi, maps);
+            }
+            const PT g = pa_graph_function(F, f, c.n);
+            bool all = true;
+            for (const PMap& a : pa_graph_maps(F, f, c.n, maps)) {
+                PMat M;
+                std::vector<int> sg;
+                all &= pa_map_check(F, g.data(), c.n + 1, a, M, sg) && sg[0] == 0;
+            }
+            expect(all, "weak normality: the symmetries carried to the graph", c.p, c.n, fi);
+            const PResult plain = pa_solve_weak(f, c.p, c.n, par);
+            for (int mode = 0; mode < 4; ++mode) {
+                const PResult r = pa_solve_weak(f, c.p, c.n, mode % 2 ? def : par, -1, mode, 3, &maps);
+                expect(r.k == plain.k && witness_ok(f, c.p, c.n, r), "weak normality with symmetries", c.p, c.n, 10 * fi + mode);
+                in_graph += r.sym_graph && r.sym_used > 0;
+            }
+        }
+        expect(in_graph > 0, "weak normality: no symmetry was used in the graph", 0, 0, 0);
+    }
+    lap("p-ary: weak normality");
     return fails;
 }

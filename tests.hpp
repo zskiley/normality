@@ -1,11 +1,13 @@
 // Self-test: compares the solver with an independent brute force (n <= 7),
 // with closed-form answers (quadratic forms, Maiorana-McFarland), and with
 // itself under every combination of pruning switches, with and without the
-// symmetry pruning.
+// symmetry pruning.  Weak normality is compared with the normality of
+// f + <u, x> over all u.
 #pragma once
 #include "gen.hpp"
 #include "solver.hpp"
 #include "autlib.hpp"
+#include "weak.hpp"
 #include "ptests.hpp"
 
 typedef unsigned __int128 u128;
@@ -797,6 +799,120 @@ static int selftest() {
         expect(!ok && now_sec() - t0 < 8.0, "library time limit not enforced", 10, 0);
         lap("symmetry: external library");
     } else printf("  (external equivalence library not built in: its tests are skipped)\n");
+    // 10. Weak normality (weak.hpp).  The largest k such that f is affine on a
+    //     k-flat is the maximum over u of the normality of f + <u, x>, taken
+    //     here by brute force (n <= 6) or with the solver.  The witness is
+    //     evaluated again.  Also every target, quadratic functions (n - h for
+    //     rank 2h), bent functions, and the runs with known symmetries, with
+    //     the library and with several threads.
+    {
+        auto witness_ok = [&](const TT& F, const Result& r) {
+            if (!r.weak || (int)r.basis.size() != r.k || r.slope.size() != r.basis.size()) return false;
+            std::vector<u32> pts;
+            for (u32 t = 0; t < ((u32)1 << r.k); ++t) {
+                u32 x = r.a;
+                int v = r.value;
+                for (int i = 0; i < r.k; ++i)
+                    if ((t >> i) & 1) x ^= r.basis[i], v ^= r.slope[i];
+                if ((int)getbit(F.data(), x) != v) return false;
+                pts.push_back(x);
+            }
+            std::sort(pts.begin(), pts.end());
+            return std::unique(pts.begin(), pts.end()) == pts.end();  // 2^k different points: the basis is independent
+        };
+        auto by_linear = [&](const TT& F, int n) {
+            int best = -1;
+            for (u32 u = 0; u < ((u32)1 << n); ++u) {
+                const TT G = add_linear(F, n, u);
+                best = std::max(best, n <= 6 ? brute_force(G, n) : solve(G, n, def).k);
+            }
+            return best;
+        };
+        int wi = 0, runs = 0, hits = 0;
+        for (int n = 1; n <= 9; ++n)
+            for (int it = 0; it < (n <= 6 ? 10 : n <= 8 ? 4 : 2); ++it) {
+                ++wi;
+                const TT F = it % 5 == 4 && n >= 3 ? random_degree(n, 3, 900 + wi)
+                             : it % 5 == 3 ? random_function(n, 900 + wi, 1, 4) : random_function(n, 900 + wi);
+                const int want = by_linear(F, n), k0 = n <= 6 ? brute_force(F, n) : solve(F, n, def).k;
+                for (int th : {1, 3}) {
+                    Options o = def;
+                    o.threads = th;
+                    const Result r = solve_weak(F, n, o);
+                    expect(r.k == want, "weak normality against all linear functions", n, wi);
+                    expect(witness_ok(F, r), "weak normality: witness", n, wi);
+                    expect(r.const_k == k0, "weak normality: the normality of f", n, wi);
+                    runs += r.graph_dim >= 0;
+                    hits += r.graph_found;
+                }
+                for (int t = 0; t <= n; ++t) {
+                    const Result r = solve_weak(F, n, def, 3, t);
+                    expect((r.k >= t) == (t <= want), "weak normality: target", n, 100 * wi + t);
+                    expect(witness_ok(F, r), "weak normality: witness of a target run", n, 100 * wi + t);
+                }
+            }
+        expect(hits > 5 && runs - hits > 5, "weak normality: both outcomes of the search in the graph", 0, hits);
+        for (int n = 4; n <= 12; ++n)
+            for (int it = 0; it < 6; ++it) {
+                const TT F = random_degree(n, 2, 7000 + 31 * n + it);
+                const Result r = solve_weak(F, n, def);
+                expect(r.k == n - quad_rank(F, n) / 2 && witness_ok(F, r), "weak normality of a quadratic function", n, it);
+            }
+        for (int n = 6; n <= 12; n += 2) {
+            const TT F = scramble(mm_bent(n, n), n, 3 * n);
+            const Result r = solve_weak(F, n, def);
+            expect(r.k == n / 2 && witness_ok(F, r), "weak normality of a Maiorana-McFarland function", n, 0);
+        }
+        {  // a bent function that is weakly normal and not normal
+            const TT F = add_linear(kasami(10), 10, 1);
+            const Result r = solve_weak(F, 10, def);
+            expect(solve(F, 10, def).k == 4 && r.k == 5 && r.graph_found && witness_ok(F, r), "Kasami(10) + x0", 10, 0);
+        }
+        g_known_sym = true;
+        std::vector<Spec> specs;
+        specs.push_back(sp_field(kasami(8), 8));
+        specs.push_back(sp_field(power_function(9, 510, 0), 9));
+        specs.push_back(sp_symmetric(threshold_function(9, 5), 9));
+        specs.push_back(sp_scramble(sp_field(power_function(10, 5, 0), 10), 3));
+        specs.push_back(sp_hyp(sp_field(kasami(6), 6), 1));
+        specs.push_back(sp_field(power_function(11, 2046, 0), 11));
+        specs.push_back(sp_field(power_function(13, 8190, 0), 13));
+        specs.push_back(sp_scramble(sp_ps(ps_ap(8, 3), 8), 9));
+        g_known_sym = false;
+        int si = 0, in_graph = 0;
+        for (const Spec& sp : specs) {
+            ++si;
+            for (u32 u : {0u, 5u, ((u32)1 << sp.n) - 2}) {
+                // a symmetry of f is one of f + <u, x> up to an affine function, and so one of its graph
+                const TT F = add_linear(sp.F, sp.n, u), G = graph_function(F, sp.n);
+                const std::vector<AffMap> lm = graph_maps(F, sp.n, sp.sym);
+                bool all = !lm.empty() && lm.size() == sp.sym.size();
+                for (const AffMap& a : lm) all &= aut_kind(G.data(), sp.n + 1, to_lmap(a.col), a.t) == 0;
+                expect(all, "weak normality: the symmetries carried to the graph", sp.n, 10 * si + (u != 0));
+                Options o = def;
+                o.threads = 2;
+                o.sym_cands = &sp.sym;
+                const Result plain = solve_weak(F, sp.n, def), r = solve_weak(F, sp.n, o);
+                expect(r.k == plain.k && witness_ok(F, r) && witness_ok(F, plain), "weak normality with symmetries", sp.n,
+                       10 * si + (u != 0));
+                in_graph += r.sym_graph && r.sym_gens > 0;
+            }
+        }
+        expect(in_graph > 0, "weak normality: no symmetry was used in the graph", 0, 0);
+        if (aut_library_built()) {
+            int li = 0;
+            for (const Spec& sp : specs) {
+                if (++li > 4) break;
+                Options o = def;
+                o.threads = 2;
+                o.aut_source = aut_library_start;
+                o.aut_budget = 20.0;
+                const Result plain = solve_weak(sp.F, sp.n, def), r = solve_weak(sp.F, sp.n, o);
+                expect(r.k == plain.k && witness_ok(sp.F, r), "weak normality with the library", sp.n, li);
+            }
+        }
+    }
+    lap("weak normality");
     fails += pary_selftest(checks);
     printf("selftest: %d checks, %d failures\n", checks, fails);
     return fails;
